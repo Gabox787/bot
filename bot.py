@@ -233,7 +233,7 @@ class SignalBot:
         self.tg = Bot(token=cfg['telegram_token'])
 
         # Binance — только чтение данных, ключи НЕ нужны
-        self.exchange = ccxt.binance({
+        self.exchange = ccxt.bybit({
             'enableRateLimit': True,
         })
 
