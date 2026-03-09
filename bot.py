@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- CONFIG (С исправленными тикерами) ---
+# --- CONFIG ---
 CONFIG = {
     'telegram_token': '8746717150:AAEz2ugYWK_7gig48Y_-QZHb9VQ74x7gqTw',
     'chat_id': '715162339',
@@ -138,33 +138,39 @@ class SignalBot:
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error {symbol}: {e}")
 
-# --- КОМАНДЫ И ВЕБ-СЕРВЕР ---
+# --- КОМАНДЫ ---
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Бот на связи!\nКоманды:\n/trades - история сделок")
+    logger.info(f"!!! MESSAGE FROM {update.effective_chat.id}: {update.message.text} !!!")
+    await update.message.reply_text("🤖 Бот на связи!\nКоманды:\n/trades - история сделок\n/id - узнать свой ID")
+
+async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Твой chat_id: {update.effective_chat.id}")
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
 
 async def handle_render_ping(reader, writer):
-    """Ответ для Render, чтобы подтвердить, что порт жив"""
     writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
     await writer.drain()
     writer.close()
 
 async def main():
+    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ...")
     bot_logic = SignalBot(CONFIG)
     app = Application.builder().token(CONFIG['telegram_token']).build()
     
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("trades", trades_cmd))
+    app.add_handler(CommandHandler("id", id_cmd))
 
-    # Запускаем сервер порта (слушаем на всех интерфейсах 0.0.0.0)
     port = int(os.environ.get("PORT", 10000))
     await asyncio.start_server(handle_render_ping, '0.0.0.0', port)
     logger.info(f"✅ Web server active on port {port}")
 
     async with app:
+        # Принудительно удаляем вебхук перед стартом
+        await app.bot.delete_webhook(drop_pending_updates=True)
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
