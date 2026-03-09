@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # --- CONFIG (С исправленными тикерами) ---
 CONFIG = {
-    'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
+    'telegram_token': '8746717150:AAEz2ugYWK_7gig48Y_-QZHb9VQ74x7gqTw',
     'chat_id': '715162339',
     'symbols': [
         'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
