@@ -25,23 +25,17 @@ logger = logging.getLogger(__name__)
 CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
-    'symbols': [
-        # --- Мейджоры ---
+   'symbols': [
         'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT',
         'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
-        'DOT/USDT', 'POL/USDT',   # MATIC теперь POL
+        'DOT/USDT', 'POL/USDT',   # Вместо MATIC
         'LTC/USDT', 'TRX/USDT', 
         'ATOM/USDT', 'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
         'ARB/USDT', 'OP/USDT', 'SUI/USDT', 'PEPE/USDT',
-
-        # --- Средняя капитализация и ИИ ---
-        'FTM/USDT', 'AAVE/USDT', 'RENDER/USDT', # RNDR переехал на RENDER
+        'AAVE/USDT', 'RENDER/USDT', # Вместо RNDR
         'INJ/USDT', 'IMX/USDT', 'RUNE/USDT', 'GALA/USDT', 
-        'VET/USDT', 'FET/USDT',  # FET теперь включает в себя бывшие AGIX и OCEAN
-        'SEI/USDT', 'ICP/USDT', 'WLD/USDT', 'JUP/USDT',
-
-        # --- Мемкоины ---
-        'BONK/USDT', 'SHIB/USDT', 'FLOKI/USDT', 'MEME/USDT'
+        'FET/USDT', 'SEI/USDT', 'ICP/USDT', 'WLD/USDT',
+        'BONK/USDT', 'SHIB/USDT', 'FLOKI/USDT'
     ],
     'timeframe': '15m',
     'ema_fast': 9,
