@@ -3,7 +3,6 @@ import pandas as pd
 import asyncio
 import logging
 import os
-import socket
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -16,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- CONFIG ---
+# --- ИСПРАВЛЕННЫЙ CONFIG ---
 CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
@@ -35,10 +34,10 @@ CONFIG = {
     'risk_per_trade': 0.02,
     'stop_loss_pct': 0.01,
     'take_profit_pct': 0.03,
-    'check_interval': 60,
+    'check_interval': 60
 }
 
-# --- КЛАССЫ ЛОГИКИ ---
+# --- ЛОГИКА ТОРГОВЛИ ---
 
 class TradeJournal:
     def __init__(self, filename='history.csv'):
@@ -139,47 +138,43 @@ class SignalBot:
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error {symbol}: {e}")
 
-# --- ФУНКЦИИ КОМАНД И ПОРТА ---
+# --- ЗАПУСК ---
+
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Бот на связи!\nКоманды:\n/trades - история сделок")
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
 
-async def health_check_server():
-    """Сверхлегкий сервер для Render"""
+async def run_server():
     port = int(os.environ.get("PORT", 10000))
     server = await asyncio.start_server(lambda r, w: w.close(), '0.0.0.0', port)
-    logger.info(f"✅ Health check server on port {port}")
+    logger.info(f"✅ Web server active on port {port}")
     async with server:
         await server.serve_forever()
 
-async def run_bot():
+async def main():
     bot_logic = SignalBot(CONFIG)
-    # Используем базовый builder для стабильности
     app = Application.builder().token(CONFIG['telegram_token']).build()
+    
+    app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("trades", trades_cmd))
 
-    # Запускаем порт как отдельную задачу
-    asyncio.create_task(health_check_server())
+    asyncio.create_task(run_server())
 
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        
-        logger.info("🤖 Bot is active and scanning...")
-        try:
-            await app.bot.send_message(chat_id=CONFIG['chat_id'], text="🚀 Бот запущен! Стабильность проверена.")
-        except: pass
-
+        logger.info("🤖 Scanning started...")
         while True:
             await bot_logic.scan(app.bot)
             await asyncio.sleep(60)
 
 if __name__ == '__main__':
-    # Оставляем только один способ запуска без вложенных циклов
     try:
-        asyncio.run(run_bot())
+        asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Stopped.")
     except Exception as e:
-        logger.critical(f"Global error: {e}")
+        logger.critical(f"FATAL: {e}")
