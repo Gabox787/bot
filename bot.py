@@ -114,20 +114,66 @@ async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
 
 if __name__ == '__main__':
-    # Порт для Render
+    # 1. Запуск сервера-"обманки" для Render (чтобы не было Port Timeout)
     import threading
+    import os
+    import time
     from http.server import SimpleHTTPRequestHandler, HTTPServer
-    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 8080))), SimpleHTTPRequestHandler).serve_forever(), daemon=True).start()
 
-    # Запуск
-    bot_logic = SignalBot(CONFIG)
-    app = Application.builder().token(CONFIG['telegram_token']).build()
-    app.add_handler(CommandHandler("trades", trades_cmd))
+    def run_dummy():
+        port = int(os.environ.get("PORT", 8080))
+        # Пробуем несколько раз, если порт еще занят старым процессом
+        for i in range(5):
+            try:
+                server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+                logger.info(f"Dummy server started on port {port}")
+                server.serve_forever()
+                break
+            except OSError:
+                logger.warning(f"Port {port} busy, retrying in 5s...")
+                time.sleep(5)
 
-    async def loop():
-        while True:
-            await bot_logic.scan(app)
-            await asyncio.sleep(60)
+    threading.Thread(target=run_dummy, daemon=True).start()
 
-    asyncio.get_event_loop().create_task(loop())
-    app.run_polling()
+    # 2. Главная функция запуска бота
+    async def main():
+        # Инициализируем логику
+        bot_logic = SignalBot(CONFIG)
+        
+        # Настраиваем Telegram Application
+        # В твоем коде команда называлась trades_cmd или trades_command - проверь название функции!
+        application = Application.builder().token(CONFIG['telegram_token']).build()
+        application.add_handler(CommandHandler("trades", trades_command))
+
+        # Запускаем цикл сканирования рынка как фоновую задачу
+        async def scan_loop():
+            await application.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот запущен! Команда /trades активна.")
+            while True:
+                try:
+                    await bot_logic.scan(application.bot)
+                except Exception as e:
+                    logger.error(f"Scan loop error: {e}")
+                await asyncio.sleep(60)
+
+        # Используем контекстный менеджер для правильной работы с ресурсами
+        async with application:
+            await application.initialize()
+            await application.start_polling()
+            logger.info("Bot is polling for commands...")
+            
+            # Запускаем бесконечный цикл сканирования
+            await scan_loop()
+            
+            # Эти строки выполнятся только при выключении
+            await application.stop_polling()
+            await application.shutdown()
+
+    # Запуск всей системы через asyncio.run
+    try:
+        import nest_asyncio
+        nest_asyncio.apply()
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped.")
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}")
