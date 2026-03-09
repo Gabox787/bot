@@ -25,20 +25,12 @@ CONFIG = {
         'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'POL/USDT', 'NEAR/USDT',
         'SUI/USDT', 'RENDER/USDT', 'FET/USDT', 'PEPE/USDT', 'FTM/USDT'
     ],
-    'timeframe': '15m',
-    'ema_fast': 9,
-    'ema_slow': 21,
-    'rsi_period': 14,
-    'vol_ma_period': 20,
-    'balance': 1000,
-    'leverage': 3,
-    'risk_per_trade': 0.02,
-    'stop_loss_pct': 0.01,
-    'take_profit_pct': 0.03,
-    'check_interval': 60,
+    'timeframe': '15m', 'ema_fast': 9, 'ema_slow': 21, 'rsi_period': 14,
+    'vol_ma_period': 20, 'balance': 1000, 'leverage': 3, 'risk_per_trade': 0.02,
+    'stop_loss_pct': 0.01, 'take_profit_pct': 0.03, 'check_interval': 60,
 }
 
-# --- ТВОЯ ЛОГИКА (БЕЗ ИЗМЕНЕНИЙ) ---
+# --- КЛАССЫ (TradeJournal, add_indicators, SignalBot) - ВЕСЬ ТВОЙ КОД ТУТ ---
 
 class TradeJournal:
     def __init__(self, filename='history.csv'):
@@ -57,8 +49,7 @@ class TradeJournal:
             new_row = {
                 'date': datetime.now().strftime('%d.%m %H:%M'),
                 'symbol': symbol, 'side': side, 'result': result,
-                'profit_usdt': round(profit_usdt, 2),
-                'profit_pct': round(price_diff_pct * 100, 2)
+                'profit_usdt': round(profit_usdt, 2), 'profit_pct': round(price_diff_pct * 100, 2)
             }
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
             df.to_csv(self.filename, index=False)
@@ -140,33 +131,33 @@ class SignalBot:
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error {symbol}: {e}")
 
-# --- ФИКСАЦИЯ ОШИБОК И ЗАПУСК ---
+# --- ФИНАЛЬНЫЙ СУПЕР-ЗАПУСК ---
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
 
-async def run_server():
-    """Асинхронный сервер для Render (без потоков)"""
+async def run_dummy_port():
+    """Самый простой асинхронный ответ для порта 10000"""
     port = int(os.environ.get("PORT", 10000))
     server = await asyncio.start_server(lambda r, w: w.close(), '0.0.0.0', port)
-    logger.info(f"✅ Web server active on port {port}")
+    logger.info(f"✅ Port {port} secured")
     async with server:
         await server.serve_forever()
 
-async def main_bot():
+async def start_app():
     bot_logic = SignalBot(CONFIG)
     app = Application.builder().token(CONFIG['telegram_token']).build()
     app.add_handler(CommandHandler("trades", trades_cmd))
 
-    # Запускаем сервер порта фоном
-    asyncio.create_task(run_server())
+    # Запускаем порт фоном
+    asyncio.create_task(run_dummy_port())
 
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        logger.info("🤖 Scanning started...")
-        try: await app.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот ожил!")
+        logger.info("🤖 Bot scanning active")
+        try: await app.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот запущен без ошибок!")
         except: pass
         
         while True:
@@ -174,18 +165,14 @@ async def main_bot():
             await asyncio.sleep(60)
 
 if __name__ == '__main__':
-    # Прямое управление циклом событий (обход бага Python 3.14)
+    # Ручной запуск цикла вместо asyncio.run()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
     try:
-        import nest_asyncio
-        nest_asyncio.apply()
-    except: pass
-
-    try:
-        loop.run_until_complete(main_bot())
+        loop.run_until_complete(start_app())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped.")
+        logger.info("Bot manually stopped.")
+    except Exception as e:
+        logger.critical(f"FATAL SYSTEM ERROR: {e}")
     finally:
         loop.close()
