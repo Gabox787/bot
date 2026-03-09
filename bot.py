@@ -4,9 +4,9 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime
-from http.server import SimpleHTTPRequestHandler, HTTPServer
+import socket
 import threading
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# CONFIG (без изменений)
+# CONFIG
 CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
@@ -107,7 +107,6 @@ class SignalBot:
         self.last_candle = {}
 
     async def scan(self, app_bot):
-        # 1. Трекинг
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
@@ -123,7 +122,6 @@ class SignalBot:
                     self.active_trades.remove(trade)
             except Exception as e: logger.error(f"Track error: {e}")
 
-        # 2. Поиск сигналов
         for symbol in self.cfg['symbols']:
             try:
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, symbol, self.cfg['timeframe'], limit=50)
@@ -153,16 +151,20 @@ async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
 
 def run_dummy_server():
+    """Низкоуровневый сервер для Render, чтобы избежать проблем с NoneType в HTTPServer"""
     port = int(os.environ.get("PORT", 10000))
-    for i in range(10):
-        try:
-            server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-            logger.info(f"✅ Web server active on port {port}")
-            server.serve_forever()
-            return
-        except OSError:
-            logger.warning(f"Port {port} busy, retry {i+1}/10")
-            time.sleep(5)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('0.0.0.0', port))
+            s.listen(1)
+            logger.info(f"✅ Port {port} bound successfully")
+            while True:
+                conn, addr = s.accept()
+                with conn:
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+    except Exception as e:
+        logger.error(f"Dummy server error: {e}")
 
 async def main():
     bot_logic = SignalBot(CONFIG)
@@ -171,28 +173,31 @@ async def main():
 
     async def scan_loop():
         await asyncio.sleep(5)
-        try: await app.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот успешно перезапущен!")
+        try: 
+            await app.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот успешно перезапущен!")
         except: pass
         while True:
-            try: await bot_logic.scan(app.bot)
-            except Exception as e: logger.error(f"Loop error: {e}")
+            try: 
+                await bot_logic.scan(app.bot)
+            except Exception as e: 
+                logger.error(f"Loop error: {e}")
             await asyncio.sleep(60)
 
     async with app:
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        await app.updater.start_polling(drop_pending_updates=True)
         await scan_loop()
 
 if __name__ == '__main__':
+    # Запуск порта в отдельном потоке
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
     try:
         import nest_asyncio
         nest_asyncio.apply()
-        logger.info("nest_asyncio applied")
     except ImportError:
-        logger.warning("nest_asyncio not found, continuing...")
+        pass
 
     try:
         asyncio.run(main())
