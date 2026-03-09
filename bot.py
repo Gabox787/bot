@@ -26,9 +26,18 @@ CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
     'symbols': [
-        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 
-        'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'IMX/USDT', 'DOT/USDT',
-        'NEAR/USDT', 'SUI/USDT', 'PEPE/USDT', 'FET/USDT', 'RENDER/USDT'
+        # Мейджоры
+        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT',
+        'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
+        'DOT/USDT', 'POL/USDT', 'LTC/USDT', 'TRX/USDT',  # MATIC заменен на POL
+        'ATOM/USDT', 'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
+        'ARB/USDT', 'OP/USDT', 'SUI/USDT', 'PEPE/USDT',
+        # Средняя капитализация
+        'FTM/USDT', 'AAVE/USDT', 'RENDER/USDT', 'INJ/USDT', # RNDR заменен на RENDER
+        'IMX/USDT', 'RUNE/USDT', 'GALA/USDT', 'VET/USDT',
+        'FET/USDT', 'SEI/USDT', 'ICP/USDT', 'WLD/USDT',
+        # Мемкоины
+        'BONK/USDT', 'SHIB/USDT', 'FLOKI/USDT',
     ],
     'timeframe': '15m',
     'ema_fast': 9,
