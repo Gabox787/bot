@@ -34,8 +34,18 @@ CONFIG = {
 
     # ── Торговые пары ──
     'symbols': [
-        'BTC/USDT', 'ETH/USDT', 'SOL/USDT',
-        'BNB/USDT', 'XRP/USDT', 'DOGE/USDT',
+    # ── Мейджоры ──
+    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT',
+    'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
+    'DOT/USDT', 'MATIC/USDT', 'LTC/USDT', 'TRX/USDT',
+    'ATOM/USDT', 'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
+    'ARB/USDT', 'OP/USDT', 'SUI/USDT', 'PEPE/USDT',
+    # ── Средняя капитализация ──
+    'FTM/USDT', 'AAVE/USDT', 'RNDR/USDT', 'INJ/USDT',
+    'IMX/USDT', 'RUNE/USDT', 'GALA/USDT', 'VET/USDT',
+    'FET/USDT', 'SEI/USDT', 'ICP/USDT', 'WLD/USDT',
+    # ── Мемкоины ──
+    'BONK/USDT', 'SHIB/USDT', 'FLOKI/USDT',
     ],
     'timeframe': '15m',
 
@@ -53,7 +63,7 @@ CONFIG = {
     'take_profit_pct': 0.03,     # 3%  → RR 1:3
 
     # ── Интервал проверки ──
-    'check_interval': 30,        # секунд
+    'check_interval': 60,        # секунд
 }
 
 
