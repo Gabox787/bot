@@ -20,11 +20,16 @@ logger = logging.getLogger(__name__)
 CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
+    CONFIG = {
+    'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
+    'chat_id': '715162339',
     'symbols': [
         'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-        'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'POL/USDT', 'NEAR/USDT',
+        'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'MATIC/USDT', 'NEAR/USDT',
         'SUI/USDT', 'RENDER/USDT', 'FET/USDT', 'PEPE/USDT', 'FTM/USDT'
     ],
+    # ... остальные настройки без изменений ...
+}
     'timeframe': '15m', 'ema_fast': 9, 'ema_slow': 21, 'rsi_period': 14,
     'vol_ma_period': 20, 'balance': 1000, 'leverage': 3, 'risk_per_trade': 0.02,
     'stop_loss_pct': 0.01, 'take_profit_pct': 0.03, 'check_interval': 60,
