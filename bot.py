@@ -180,31 +180,39 @@ async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == '__main__':
     import threading
+    import os
     import time
     from http.server import SimpleHTTPRequestHandler, HTTPServer
 
     # 1. Сервер-"обманка" для Render
     def run_dummy():
+        # Render сам назначает порт, обычно 10000
         port = int(os.environ.get("PORT", 10000))
-        for i in range(5):
+        for i in range(10): # Пробуем 10 раз с паузой
             try:
                 server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
                 logger.info(f"✅ Web server active on port {port}")
                 server.serve_forever()
-                break
+                return
             except OSError:
+                logger.warning(f"Port {port} busy, retrying in 5s... (attempt {i+1}/10)")
                 time.sleep(5)
 
     threading.Thread(target=run_dummy, daemon=True).start()
 
-    # 2. Основной цикл
+    # 2. Основной цикл бота
     async def main():
         bot_logic = SignalBot(CONFIG)
         application = Application.builder().token(CONFIG['telegram_token']).build()
         application.add_handler(CommandHandler("trades", trades_cmd))
 
         async def scan_loop():
-            await application.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот запущен! Команда /trades активна.")
+            # Небольшая пауза перед стартом, чтобы всё прогрузилось
+            await asyncio.sleep(5)
+            try:
+                await application.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот успешно перезапущен!")
+            except: pass
+            
             while True:
                 try:
                     await bot_logic.scan(application.bot)
@@ -218,9 +226,16 @@ if __name__ == '__main__':
             await application.updater.start_polling()
             await scan_loop()
 
+    # Запуск без обязательного nest_asyncio
     try:
-        import nest_asyncio
-        nest_asyncio.apply()
+        try:
+            import nest_asyncio
+            nest_asyncio.apply()
+        except ImportError:
+            logger.info("nest_asyncio not found, continuing without it...")
+            
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped.")
+    except Exception as e:
+        logger.critical(f"Fatal error in main: {e}")
