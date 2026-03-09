@@ -15,14 +15,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- ИСПРАВЛЕННЫЙ CONFIG ---
+# --- CONFIG (С исправленными тикерами) ---
 CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
     'symbols': [
         'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
         'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'NEAR/USDT',
-        'SUI/USDT', 'RENDER/USDT', 'FET/USDT', 'PEPE/USDT', 'FTM/USDT'
+        'SUI/USDT', 'RENDER/USDT', 'FET/USDT', 'PEPE/USDT', 'MATIC/USDT'
     ],
     'timeframe': '15m',
     'ema_fast': 9,
@@ -138,7 +138,7 @@ class SignalBot:
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error {symbol}: {e}")
 
-# --- ЗАПУСК ---
+# --- КОМАНДЫ И ВЕБ-СЕРВЕР ---
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Бот на связи!\nКоманды:\n/trades - история сделок")
@@ -146,12 +146,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
 
-async def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = await asyncio.start_server(lambda r, w: w.close(), '0.0.0.0', port)
-    logger.info(f"✅ Web server active on port {port}")
-    async with server:
-        await server.serve_forever()
+async def handle_render_ping(reader, writer):
+    """Ответ для Render, чтобы подтвердить, что порт жив"""
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+    await writer.drain()
+    writer.close()
 
 async def main():
     bot_logic = SignalBot(CONFIG)
@@ -160,7 +159,10 @@ async def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("trades", trades_cmd))
 
-    asyncio.create_task(run_server())
+    # Запускаем сервер порта (слушаем на всех интерфейсах 0.0.0.0)
+    port = int(os.environ.get("PORT", 10000))
+    await asyncio.start_server(handle_render_ping, '0.0.0.0', port)
+    logger.info(f"✅ Web server active on port {port}")
 
     async with app:
         await app.initialize()
