@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- ТВОЙ CONFIG ---
+# --- CONFIG ---
 CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
@@ -30,7 +30,7 @@ CONFIG = {
     'stop_loss_pct': 0.01, 'take_profit_pct': 0.03, 'check_interval': 60,
 }
 
-# --- КЛАССЫ (TradeJournal, add_indicators, SignalBot) - ВЕСЬ ТВОЙ КОД ТУТ ---
+# --- КЛАССЫ ЛОГИКИ ---
 
 class TradeJournal:
     def __init__(self, filename='history.csv'):
@@ -131,48 +131,47 @@ class SignalBot:
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error {symbol}: {e}")
 
-# --- ФИНАЛЬНЫЙ СУПЕР-ЗАПУСК ---
+# --- ФУНКЦИИ КОМАНД И ПОРТА ---
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
 
-async def run_dummy_port():
-    """Самый простой асинхронный ответ для порта 10000"""
+async def health_check_server():
+    """Сверхлегкий сервер для Render"""
     port = int(os.environ.get("PORT", 10000))
     server = await asyncio.start_server(lambda r, w: w.close(), '0.0.0.0', port)
-    logger.info(f"✅ Port {port} secured")
+    logger.info(f"✅ Health check server on port {port}")
     async with server:
         await server.serve_forever()
 
-async def start_app():
+async def run_bot():
     bot_logic = SignalBot(CONFIG)
+    # Используем базовый builder для стабильности
     app = Application.builder().token(CONFIG['telegram_token']).build()
     app.add_handler(CommandHandler("trades", trades_cmd))
 
-    # Запускаем порт фоном
-    asyncio.create_task(run_dummy_port())
+    # Запускаем порт как отдельную задачу
+    asyncio.create_task(health_check_server())
 
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        logger.info("🤖 Bot scanning active")
-        try: await app.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот запущен без ошибок!")
-        except: pass
         
+        logger.info("🤖 Bot is active and scanning...")
+        try:
+            await app.bot.send_message(chat_id=CONFIG['chat_id'], text="🚀 Бот запущен! Стабильность проверена.")
+        except: pass
+
         while True:
             await bot_logic.scan(app.bot)
             await asyncio.sleep(60)
 
 if __name__ == '__main__':
-    # Ручной запуск цикла вместо asyncio.run()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # Оставляем только один способ запуска без вложенных циклов
     try:
-        loop.run_until_complete(start_app())
+        asyncio.run(run_bot())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot manually stopped.")
+        logger.info("Stopped.")
     except Exception as e:
-        logger.critical(f"FATAL SYSTEM ERROR: {e}")
-    finally:
-        loop.close()
+        logger.critical(f"Global error: {e}")
