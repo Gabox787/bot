@@ -25,14 +25,14 @@ logger = logging.getLogger(__name__)
 CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
-   'symbols': [
+    'symbols': [
         'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT',
         'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
-        'DOT/USDT', 'POL/USDT',   # Вместо MATIC
+        'DOT/USDT', 'POL/USDT',   # Актуальный MATIC
         'LTC/USDT', 'TRX/USDT', 
         'ATOM/USDT', 'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
         'ARB/USDT', 'OP/USDT', 'SUI/USDT', 'PEPE/USDT',
-        'AAVE/USDT', 'RENDER/USDT', # Вместо RNDR
+        'AAVE/USDT', 'RENDER/USDT', # Актуальный RNDR
         'INJ/USDT', 'IMX/USDT', 'RUNE/USDT', 'GALA/USDT', 
         'FET/USDT', 'SEI/USDT', 'ICP/USDT', 'WLD/USDT',
         'BONK/USDT', 'SHIB/USDT', 'FLOKI/USDT'
@@ -62,26 +62,30 @@ class TradeJournal:
             df.to_csv(self.filename, index=False)
 
     def add_signal(self, symbol, side, price, sl, tp):
-        df = pd.read_csv(self.filename)
-        new_row = {
-            'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'symbol': symbol,
-            'side': side,
-            'price': price,
-            'sl': sl,
-            'tp': tp,
-            'status': 'OPEN',
-            'profit_usdt': 0
-        }
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        df.to_csv(self.filename, index=False)
+        try:
+            df = pd.read_csv(self.filename)
+            new_row = {
+                'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'symbol': symbol,
+                'side': side,
+                'price': price,
+                'sl': sl,
+                'tp': tp,
+                'status': 'OPEN',
+                'profit_usdt': 0
+            }
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            df.to_csv(self.filename, index=False)
+        except Exception as e:
+            logger.error(f"Journal error: {e}")
 
     def get_stats(self):
-        df = pd.read_csv(self.filename)
-        if df.empty: return "История пуста"
-        total_trades = len(df)
-        # Это упрощенная статистика, так как бот не знает, закрылась ли сделка реально
-        return f"Всего сигналов в базе: {total_trades}"
+        try:
+            df = pd.read_csv(self.filename)
+            if df.empty: return "История пуста"
+            return f"Сигналов в базе: {len(df)}"
+        except:
+            return "Статистика недоступна"
 
 # ╔══════════════════════════════════════════════╗
 # ║               МАТЕМАТИКА                     ║
@@ -108,8 +112,6 @@ def add_indicators(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 def calc_trade_params(signal: dict, cfg: dict) -> dict:
     price = signal['price']
     side = signal['side']
-    
-    # Определяем точность (сколько знаков после запятой)
     precision = 4 if price < 1 else 2
     
     if side == 'LONG':
@@ -120,9 +122,7 @@ def calc_trade_params(signal: dict, cfg: dict) -> dict:
         tp = price * (1 - cfg['take_profit_pct'])
 
     risk_usdt = cfg['balance'] * cfg['risk_per_trade']
-    sl_dist_pct = cfg['stop_loss_pct']
-    # Размер позиции = Риск / Дистанция до стопа
-    size = risk_usdt / (price * sl_dist_pct)
+    size = risk_usdt / (price * cfg['stop_loss_pct'])
     margin = (size * price) / cfg['leverage']
 
     return {
@@ -145,6 +145,7 @@ class SignalBot:
         self.exchange = ccxt.bybit({'enableRateLimit': True})
         self.journal = TradeJournal()
         self.last_candle = {}
+        self.markets_loaded = False
 
     async def notify(self, text: str):
         try:
@@ -153,9 +154,20 @@ class SignalBot:
             logger.error(f"TG Error: {e}")
 
     async def scan(self):
-        for symbol in self.cfg['symbols']:
+        # Загружаем список рынков один раз, чтобы не спамить ошибками
+        if not self.markets_loaded:
             try:
-                raw = self.exchange.fetch_ohlcv(symbol, self.cfg['timeframe'], limit=50)
+                await asyncio.to_thread(self.exchange.load_markets)
+                self.markets_loaded = True
+            except:
+                return
+
+        for symbol in self.cfg['symbols']:
+            if symbol not in self.exchange.markets:
+                continue
+
+            try:
+                raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, symbol, self.cfg['timeframe'], limit=50)
                 df = pd.DataFrame(raw, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
                 df['ts'] = pd.to_datetime(df['ts'], unit='ms')
                 df = add_indicators(df.iloc[:-1], self.cfg)
@@ -174,8 +186,6 @@ class SignalBot:
                 if side:
                     self.last_candle[symbol] = candle_id
                     params = calc_trade_params({'side': side, 'price': c['close']}, self.cfg)
-                    
-                    # Сохраняем в историю
                     self.journal.add_signal(symbol, side, c['close'], params['sl'], params['tp'])
                     
                     msg = (
@@ -187,19 +197,18 @@ class SignalBot:
                         f"📊 {self.journal.get_stats()}"
                     )
                     await self.notify(msg)
-                    logger.info(f"Signal sent: {side} {symbol}")
+                    logger.info(f"Signal: {side} {symbol}")
 
             except Exception as e:
                 logger.error(f"Error {symbol}: {e}")
 
     async def run(self):
-        await self.notify("🤖 Бот обновлен и запущен!\nИсправлен расчет SHORT и добавлена история.")
+        await self.notify("🤖 Бот успешно обновлен!\n\nИсправлено:\n- Расчет уровней для SHORT\n- Точность цены\n- Ошибки MATIC/RNDR\n- Добавлена история")
         while True:
             await self.scan()
             await asyncio.sleep(self.cfg['check_interval'])
 
 if __name__ == '__main__':
-    # Для Render оставляем "обманку" порта
     import threading
     import os
     from http.server import SimpleHTTPRequestHandler, HTTPServer
