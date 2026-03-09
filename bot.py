@@ -22,7 +22,7 @@ CONFIG = {
     'symbols': [
         'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
         'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'NEAR/USDT',
-        'SUI/USDT', 'RENDER/USDT', 'FET/USDT', 'PEPE/USDT', 'MATIC/USDT'
+        'SUI/USDT', 'RENDER/USDT', 'FET/USDT', 'PEPE/USDT', 'POL/USDT'
     ],
     'timeframe': '15m',
     'ema_fast': 9,
