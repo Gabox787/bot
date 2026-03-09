@@ -26,7 +26,7 @@ CONFIG = {
     'symbols': [
         'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
         'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'MATIC/USDT', 'NEAR/USDT',
-        'SUI/USDT', 'RENDER/USDT', 'FET/USDT', 'PEPE/USDT', 'FTM/USDT'
+        'SUI/USDT', 'RENDER/USDT', 'FET/USDT', 'PEPE/USDT'
     ],
     # ... остальные настройки без изменений ...
 }
