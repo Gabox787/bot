@@ -3,6 +3,7 @@ import pandas as pd
 import asyncio
 import logging
 import os
+import socket
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -15,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- CONFIG (Твой оригинал) ---
+# --- ТВОЙ CONFIG ---
 CONFIG = {
     'telegram_token': '8227791601:AAHhwkKjeYXzfA2nXqfdJ52hFUCAYVtjUyM',
     'chat_id': '715162339',
@@ -37,7 +38,7 @@ CONFIG = {
     'check_interval': 60,
 }
 
-# --- КЛАССЫ И ИНДИКАТОРЫ (Твой оригинал) ---
+# --- ТВОЯ ЛОГИКА (БЕЗ ИЗМЕНЕНИЙ) ---
 
 class TradeJournal:
     def __init__(self, filename='history.csv'):
@@ -53,7 +54,6 @@ class TradeJournal:
             risk_amount = CONFIG['balance'] * CONFIG['risk_per_trade']
             position_size_usdt = risk_amount / CONFIG['stop_loss_pct']
             profit_usdt = position_size_usdt * price_diff_pct
-            
             new_row = {
                 'date': datetime.now().strftime('%d.%m %H:%M'),
                 'symbol': symbol, 'side': side, 'result': result,
@@ -104,14 +104,12 @@ class SignalBot:
         self.last_candle = {}
 
     async def scan(self, app_bot):
-        # 1. Трекинг активных сделок
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
                 curr_p = ticker['last']
                 is_tp = (trade['side'] == 'LONG' and curr_p >= trade['tp']) or (trade['side'] == 'SHORT' and curr_p <= trade['tp'])
                 is_sl = (trade['side'] == 'LONG' and curr_p <= trade['sl']) or (trade['side'] == 'SHORT' and curr_p >= trade['sl'])
-
                 if is_tp or is_sl:
                     res = 'PROFIT' if is_tp else 'LOSS'
                     exit_p = trade['tp'] if is_tp else trade['sl']
@@ -121,7 +119,6 @@ class SignalBot:
                     self.active_trades.remove(trade)
             except Exception as e: logger.error(f"Track error: {e}")
 
-        # 2. Поиск новых сигналов
         for symbol in self.cfg['symbols']:
             try:
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, symbol, self.cfg['timeframe'], limit=50)
@@ -129,75 +126,66 @@ class SignalBot:
                 df = add_indicators(df.iloc[:-1], self.cfg)
                 c = df.iloc[-1]
                 candle_id = str(c['ts'])
-
                 if self.last_candle.get(symbol) == candle_id: continue
-
                 side = 'LONG' if (c['cross_up'] and 30 <= c['rsi'] <= 60 and c['volume'] > c['vol_ma']) else \
                        'SHORT' if (c['cross_down'] and 40 <= c['rsi'] <= 70 and c['volume'] > c['vol_ma']) else None
-
                 if side:
                     self.last_candle[symbol] = candle_id
                     price = c['close']
                     precision = 4 if price < 1 else 2
                     sl = round(price * (1 - self.cfg['stop_loss_pct'] if side == 'LONG' else 1 + self.cfg['stop_loss_pct']), precision)
                     tp = round(price * (1 + self.cfg['take_profit_pct'] if side == 'LONG' else 1 - self.cfg['take_profit_pct']), precision)
-                    
                     self.active_trades.append({'symbol': symbol, 'side': side, 'entry': price, 'sl': sl, 'tp': tp})
                     msg = f"{'🟢' if side=='LONG' else '🔴'} <b>{side} {symbol}</b>\nВход: <code>{price}</code>\nТейк: <code>{tp}</code>\nСтоп: <code>{sl}</code>"
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error {symbol}: {e}")
 
-# --- ИСПРАВЛЕННЫЙ ЗАПУСК (Техническая часть) ---
+# --- ФИКСАЦИЯ ОШИБОК И ЗАПУСК ---
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
 
-async def handle_ping(reader, writer):
-    """Ответ для Render, чтобы он не закрывал порт"""
-    data = await reader.read(100)
-    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
-    await writer.drain()
-    writer.close()
-
-async def main():
-    # Создаем логику бота
-    bot_logic = SignalBot(CONFIG)
-    
-    # Инициализируем Telegram Application
-    application = Application.builder().token(CONFIG['telegram_token']).build()
-    application.add_handler(CommandHandler("trades", trades_cmd))
-
-    # Запускаем микро-сервер для порта 10000 прямо здесь
+async def run_server():
+    """Асинхронный сервер для Render (без потоков)"""
     port = int(os.environ.get("PORT", 10000))
-    server = await asyncio.start_server(handle_ping, '0.0.0.0', port)
+    server = await asyncio.start_server(lambda r, w: w.close(), '0.0.0.0', port)
     logger.info(f"✅ Web server active on port {port}")
+    async with server:
+        await server.serve_forever()
 
-    async with application:
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling(drop_pending_updates=True)
-        
-        # Приветственное сообщение
-        try:
-            await application.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот запущен! Сканирование активов начато.")
+async def main_bot():
+    bot_logic = SignalBot(CONFIG)
+    app = Application.builder().token(CONFIG['telegram_token']).build()
+    app.add_handler(CommandHandler("trades", trades_cmd))
+
+    # Запускаем сервер порта фоном
+    asyncio.create_task(run_server())
+
+    async with app:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+        logger.info("🤖 Scanning started...")
+        try: await app.bot.send_message(chat_id=CONFIG['chat_id'], text="🤖 Бот ожил!")
         except: pass
-
-        # Бесконечный цикл сканирования
+        
         while True:
-            await bot_logic.scan(application.bot)
+            await bot_logic.scan(app.bot)
             await asyncio.sleep(60)
 
 if __name__ == '__main__':
-    # Патч для асинхронности (если библиотека установлена)
+    # Прямое управление циклом событий (обход бага Python 3.14)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
         import nest_asyncio
         nest_asyncio.apply()
-    except ImportError:
-        pass
+    except: pass
 
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main_bot())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped.")
-    except Exception as e:
-        logger.critical(f"FATAL ERROR: {e}")
+    finally:
+        loop.close()
