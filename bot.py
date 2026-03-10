@@ -112,7 +112,7 @@ class SignalBot:
                     res = 'PROFIT' if is_tp else 'LOSS'
                     exit_p = trade['tp'] if is_tp else trade['sl']
                     data = self.journal.log_trade(trade['symbol'], trade['side'], res, trade['entry'], exit_p)
-                    text = f"{'✅' if is_tp else '❌'} <b>Сделка закрыта!</b>\n\nМонета: {trade['symbol']}\nПрибыль: <b>{data['profit_usdt']}$</b>"
+                    text = f"{'✅' if is_tp else '❌'} <b>Сделка закрыта!</b>\n\nМонета: {trade['symbol']}\nПрибыль: <b>{data['profit_usdt']}$</b> ({data['profit_pct']}%)"
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=text, parse_mode='HTML')
                     self.active_trades.remove(trade)
             except Exception as e: logger.error(f"Track error: {e}")
@@ -125,27 +125,84 @@ class SignalBot:
                 c = df.iloc[-1]
                 candle_id = str(c['ts'])
                 if self.last_candle.get(symbol) == candle_id: continue
+                
                 side = 'LONG' if (c['cross_up'] and 30 <= c['rsi'] <= 60 and c['volume'] > c['vol_ma']) else \
                        'SHORT' if (c['cross_down'] and 40 <= c['rsi'] <= 70 and c['volume'] > c['vol_ma']) else None
+                
                 if side:
                     self.last_candle[symbol] = candle_id
                     price = c['close']
                     precision = 4 if price < 1 else 2
                     sl = round(price * (1 - self.cfg['stop_loss_pct'] if side == 'LONG' else 1 + self.cfg['stop_loss_pct']), precision)
                     tp = round(price * (1 + self.cfg['take_profit_pct'] if side == 'LONG' else 1 - self.cfg['take_profit_pct']), precision)
+                    
+                    # Расчеты позиции
+                    risk_usdt = self.cfg['balance'] * self.cfg['risk_per_trade']
+                    pos_size_usdt = risk_usdt / self.cfg['stop_loss_pct']
+                    margin = pos_size_usdt / self.cfg['leverage']
+                    size_tokens = pos_size_usdt / price
+                    
                     self.active_trades.append({'symbol': symbol, 'side': side, 'entry': price, 'sl': sl, 'tp': tp})
-                    msg = f"{'🟢' if side=='LONG' else '🔴'} <b>{side} {symbol}</b>\nВход: <code>{price}</code>\nТейк: <code>{tp}</code>\nСтоп: <code>{sl}</code>"
+                    
+                    icon = "🟢 LONG (Покупка)" if side == 'LONG' else "🔴 SHORT (Продажа)"
+                    msg = (
+                        f"═══════════════════════════════════\n"
+                        f"<b>{icon}</b>\n"
+                        f"═══════════════════════════════════\n\n"
+                        f"Я бы {'купил' if side=='LONG' else 'продал'} сейчас {symbol}\n\n"
+                        f"📍 Цена входа:  <code>{price}</code>\n"
+                        f"🛑 Стоп-лосс:   <code>{sl}</code>  (-{self.cfg['stop_loss_pct']*100}%)\n"
+                        f"🎯 Тейк-профит: <code>{tp}</code>  (+{self.cfg['take_profit_pct']*100}%)\n\n"
+                        f"⚖️  Плечо:       x{self.cfg['leverage']}\n"
+                        f"💰 Маржа:       {round(margin, 2)} USDT\n"
+                        f"📦 Размер:      {round(size_tokens, 6)}\n"
+                        f"💵 Позиция:     {round(pos_size_usdt, 2)} USDT\n"
+                        f"⚠️  Риск:        {round(risk_usdt, 2)} USDT ({self.cfg['risk_per_trade']*100}% депо)\n\n"
+                        f"📊 RR:  1 : 3\n\n"
+                        f"📋 Причина входа:\n"
+                        f"   1. EMA пересеклась {'снизу вверх' if side=='LONG' else 'сверху вниз'} ✓\n"
+                        f"   2. RSI(14) = {round(c['rsi'], 1)} ✓\n"
+                        f"   3. Объём {round(c['volume'], 1)} > средн. {round(c['vol_ma'], 1)} ✓\n\n"
+                        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"═══════════════════════════════════"
+                    )
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error {symbol}: {e}")
 
 # --- КОМАНДЫ ---
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"!!! MESSAGE FROM {update.effective_chat.id}: {update.message.text} !!!")
-    await update.message.reply_text("🤖 Бот на связи!\nКоманды:\n/trades - история сделок\n/id - узнать свой ID")
+    await update.message.reply_text("🤖 Бот на связи!\n\nКоманды:\n/trades - история сделок\n/pnl - общая статистика\n/id - узнать свой ID")
 
 async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Твой chat_id: {update.effective_chat.id}")
+
+async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not os.path.exists('history.csv'):
+            await update.message.reply_text("История пока пуста.")
+            return
+        df = pd.read_csv('history.csv')
+        if df.empty:
+            await update.message.reply_text("Сделок еще не было.")
+            return
+        
+        total_profit = df['profit_usdt'].sum()
+        winrate = (len(df[df['result'] == 'PROFIT']) / len(df)) * 100
+        avg_roi = df['profit_pct'].mean()
+        
+        msg = (
+            f"<b>📊 Статистика торговли:</b>\n\n"
+            f"💰 Общий PnL: <b>{round(total_profit, 2)} USDT</b>\n"
+            f"📈 Средний ROI: <b>{round(avg_roi, 2)}%</b>\n"
+            f"🎯 Winrate: <b>{round(winrate, 1)}%</b>\n\n"
+            f"✅ Профит-сделки: {len(df[df['result'] == 'PROFIT'])}\n"
+            f"❌ Стоп-лоссы: {len(df[df['result'] == 'LOSS'])}\n"
+            f"📚 Всего сделок: {len(df)}"
+        )
+        await update.message.reply_html(msg)
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка расчета: {e}")
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
@@ -162,6 +219,7 @@ async def main():
     
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("trades", trades_cmd))
+    app.add_handler(CommandHandler("pnl", pnl_cmd))
     app.add_handler(CommandHandler("id", id_cmd))
 
     port = int(os.environ.get("PORT", 10000))
@@ -169,7 +227,6 @@ async def main():
     logger.info(f"✅ Web server active on port {port}")
 
     async with app:
-        # Принудительно удаляем вебхук перед стартом
         await app.bot.delete_webhook(drop_pending_updates=True)
         await app.initialize()
         await app.start()
