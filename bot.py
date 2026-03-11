@@ -93,7 +93,6 @@ class SignalBot:
         self.last_candle = {}
 
     async def scan(self, app_bot):
-        # 1. МОНИТОРИНГ
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
@@ -114,16 +113,14 @@ class SignalBot:
                     icon = "✅" if data['profit_usdt'] > 0 else "❌"
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=f"{icon} <b>Закрыто</b>: {trade['symbol']}\nИтог: <b>{data['profit_usdt']}$</b>", parse_mode='HTML')
                     self.active_trades.remove(trade)
-            except: pass
+            except Exception as e: logger.error(f"Scan error: {e}")
 
-        # 2. ПОИСК СИГНАЛОВ
         for symbol in self.cfg['symbols']:
             if any(t['symbol'] == symbol for t in self.active_trades): continue
             try:
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, symbol, self.cfg['timeframe'], limit=50)
                 df = add_indicators(pd.DataFrame(raw, columns=['ts','open','high','low','close','volume']).iloc[:-1], self.cfg)
                 c = df.iloc[-1]
-                
                 if self.last_candle.get(symbol) == str(c['ts']): continue
                 
                 side = 'LONG' if (c['cross_up'] and 30 <= c['rsi'] <= 60 and c['volume'] > c['vol_ma']) else \
@@ -135,79 +132,60 @@ class SignalBot:
                     prec = 8 if price < 0.01 else (4 if price < 1 else 2)
                     sl = round(price * (0.99 if side == 'LONG' else 1.01), prec)
                     tp = round(price * (1.03 if side == 'LONG' else 0.97), prec)
-                    
                     risk_amount = self.cfg['balance'] * self.cfg['risk_per_trade']
                     total_size = round(risk_amount / self.cfg['stop_loss_pct'], 2)
-                    margin = round(total_size / self.cfg['leverage'], 2)
                     
                     trade_id = f"cl_{symbol.replace('/', '_')}_{datetime.now().microsecond}"
-                    self.active_trades.append({
-                        'symbol': symbol, 'side': side, 'entry': price, 'sl': sl, 'tp': tp, 
-                        'size_usdt': total_size, 'trade_id': trade_id, 'start_time': datetime.now()
-                    })
+                    self.active_trades.append({'symbol': symbol, 'side': side, 'entry': price, 'sl': sl, 'tp': tp, 'size_usdt': total_size, 'trade_id': trade_id, 'start_time': datetime.now()})
                     
-                    msg = (
-                        f"💎 <b>НОВАЯ СДЕЛКА: {symbol}</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"Тип: {'🟢 LONG' if side == 'LONG' else '🔴 SHORT'}\n"
-                        f"Плечо: <b>x{self.cfg['leverage']}</b>\n"
-                        f"Причина: EMA Cross + RSI ({round(c['rsi'], 1)})\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📍 Вход: <code>{price}</code>\n"
-                        f"🛑 Стоп: <code>{sl}</code>\n"
-                        f"🎯 Тейк: <code>{tp}</code>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💰 Объем: <b>{total_size} USDT</b>\n"
-                        f"💵 Маржа: <b>{margin} USDT</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━"
-                    )
-                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML', 
-                                               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Закрыть вручную", callback_data=trade_id)]]))
+                    msg = f"💎 <b>НОВАЯ СДЕЛКА: {symbol}</b>\nТип: {side}\n📍 Вход: {price}\n💰 Объем: {total_size} USDT"
+                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Закрыть", callback_data=trade_id)]]))
             except: pass
 
 # --- КОМАНДЫ ---
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "📖 <b>СПРАВОЧНИК КОМАНД БОТА:</b>\n\n"
+        "📊 <b>Аналитика:</b>\n"
+        "• /stats — Твой торговый отчет. Показывает баланс, WinRate, лучший/худший актив и профит за разные периоды.\n"
+        "• /history — Список последних 10 закрытых сделок.\n\n"
+        "⏳ <b>Текущее:</b>\n"
+        "• /active — Список всех открытых сделок в реальном времени. Показывает PnL в % и $, сколько времени ты в сделке.\n\n"
+        "⚙️ <b>Управление:</b>\n"
+        "• /set_sl [ПАРА] [ЦЕНА] — Вручную изменить Стоп-Лосс. Пример: <code>/set_sl BTC/USDT 64000</code>\n"
+        "• /set_tp [ПАРА] [ЦЕНА] — Вручную изменить Тейк-Профит. Пример: <code>/set_tp ETH/USDT 3800</code>\n"
+        "• /start — Проверить, запущен ли бот.\n\n"
+        "ℹ️ <i>Статистика и история станут доступны после того, как бот закроет хотя бы одну сделку.</i>"
+    )
+    await update.message.reply_html(msg)
+
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not os.path.exists('history.csv'): return await update.message.reply_text("Нет данных.")
-    df = pd.read_csv('history.csv')
-    if df.empty: return await update.message.reply_text("История пуста.")
+    if not os.path.exists('history.csv') or pd.read_csv('history.csv').empty:
+        return await update.message.reply_text("📊 У вас еще нет закрытых сделок. Статистика появится после первой фиксации результата.")
     
+    df = pd.read_csv('history.csv')
     total_pnl = df['profit_usdt'].sum()
     win_rate = (len(df[df['profit_usdt'] > 0]) / len(df) * 100)
     avg_duration = df['duration_min'].mean()
-    max_drawdown = df['profit_usdt'].min()
-    
     coin_stats = df.groupby('symbol')['profit_usdt'].sum()
     best_coin = coin_stats.idxmax(); worst_coin = coin_stats.idxmin()
     
     msg = (
-        f"📊 <b>ПОЛНАЯ СТАТИСТИКА</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>ПОЛНАЯ СТАТИСТИКА</b>\n━━━━━━━━━━━━\n"
         f"💰 Баланс: <b>{round(CONFIG['balance'] + total_pnl, 2)} USDT</b>\n"
         f"📈 Общий PnL: <b>{round(total_pnl, 2)} USDT</b>\n"
         f"🎯 Win Rate: <b>{round(win_rate, 1)}%</b>\n"
-        f"📉 Max Drawdown: <b>{round(max_drawdown, 2)} USDT</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"⏱ Ср. время сделки: <b>{int(avg_duration)} мин.</b>\n"
-        f"🏆 Топ монета (+): <code>{best_coin}</code>\n"
-        f"🆘 Топ монета (-): <code>{worst_coin}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
+        f"🏆 Топ (+): <code>{best_coin}</code>\n"
+        f"🆘 Топ (-): <code>{worst_coin}</code>"
     )
     await update.message.reply_html(msg)
 
-async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not bot_instance.active_trades: return await update.message.reply_text("Нет активных сделок.")
-    msg = "<b>⏳ ТЕКУЩИЕ ПОЗИЦИИ:</b>\n\n"
-    for t in bot_instance.active_trades:
-        ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, t['symbol'])
-        curr_p = ticker['last']
-        diff = ((curr_p - t['entry']) / t['entry']) if t['side'] == 'LONG' else ((t['entry'] - curr_p) / t['entry'])
-        dur = int((datetime.now() - t['start_time']).total_seconds() / 60)
-        msg += f"🔸 <b>{t['symbol']}</b> ({t['side']})\n   PNL: {round(t['size_usdt'] * diff, 2)}$ ({round(diff*100, 2)}%)\n   Время: {dur} мин.\n   SL: {t['sl']} | TP: {t['tp']}\n\n"
-    await update.message.reply_html(msg)
-
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not os.path.exists('history.csv'): return await update.message.reply_text("История пуста.")
+    if not os.path.exists('history.csv') or pd.read_csv('history.csv').empty:
+        return await update.message.reply_text("📜 История пока пуста.")
+    
     df = pd.read_csv('history.csv').tail(10)
     msg = "<b>📜 ПОСЛЕДНИЕ 10 СДЕЛОК:</b>\n\n"
     for _, r in df.iterrows():
@@ -215,15 +193,15 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"{icon} {r['date']} | {r['symbol']} | {round(r['profit_usdt'], 2)}$\n"
     await update.message.reply_html(msg)
 
-async def daily_report(app_bot):
-    if not os.path.exists('history.csv'): return
-    df = pd.read_csv('history.csv')
-    last_24h = df[df['timestamp'] > (datetime.now().timestamp() - 86400)]
-    if last_24h.empty: return
-    pnl = last_24h['profit_usdt'].sum()
-    wr = (len(last_24h[last_24h['profit_usdt'] > 0]) / len(last_24h) * 100)
-    msg = f"🌙 <b>ИТОГИ СУТОК</b>\n━━━━━━━━━━━━\n💵 Профит: <b>{round(pnl, 2)}$</b>\n🎯 WinRate: <b>{round(wr, 1)}%</b>\n📦 Сделок: {len(last_24h)}"
-    await app_bot.send_message(chat_id=CONFIG['chat_id'], text=msg, parse_mode='HTML')
+async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not bot_instance.active_trades: return await update.message.reply_text("Нет активных сделок.")
+    msg = "<b>⏳ ТЕКУЩИЕ ПОЗИЦИИ:</b>\n\n"
+    for t in bot_instance.active_trades:
+        ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, t['symbol'])
+        diff = ((ticker['last'] - t['entry']) / t['entry']) if t['side'] == 'LONG' else ((t['entry'] - ticker['last']) / t['entry'])
+        dur = int((datetime.now() - t['start_time']).total_seconds() / 60)
+        msg += f"🔸 <b>{t['symbol']}</b>\n   PNL: {round(t['size_usdt'] * diff, 2)}$ ({round(diff*100, 2)}%)\n   Время: {dur} мин.\n\n"
+    await update.message.reply_html(msg)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
@@ -239,7 +217,8 @@ async def main():
     bot_instance = SignalBot(CONFIG)
     app = Application.builder().token(CONFIG['telegram_token']).build()
     app.add_handlers([
-        CommandHandler("start", lambda u, c: u.message.reply_text("Бот запущен!")),
+        CommandHandler("start", lambda u, c: u.message.reply_text("Бот в сети!")),
+        CommandHandler("help", help_cmd),
         CommandHandler("stats", stats_cmd),
         CommandHandler("active", active_cmd),
         CommandHandler("history", history_cmd),
@@ -249,12 +228,8 @@ async def main():
     async with app:
         await app.bot.delete_webhook(drop_pending_updates=True)
         await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
-        last_rep = datetime.now().day
         while True:
             await bot_instance.scan(app.bot)
-            now = datetime.now()
-            if now.hour == 23 and now.minute == 50 and now.day != last_rep:
-                await daily_report(app.bot); last_rep = now.day
             await asyncio.sleep(60)
 
 if __name__ == '__main__':
