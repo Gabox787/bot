@@ -37,7 +37,7 @@ CONFIG = {
     'check_interval': 60
 }
 
-# Глобальная переменная для доступа из обработчиков команд
+# Переменная для доступа к данным бота из команд Telegram
 bot_instance = None
 
 # --- ЛОГИКА ТОРГОВЛИ ---
@@ -105,6 +105,7 @@ class SignalBot:
         self.last_candle = {}
 
     async def scan(self, app_bot):
+        # Проверка закрытия сделок
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
@@ -124,6 +125,7 @@ class SignalBot:
                     self.active_trades.remove(trade)
             except Exception as e: logger.error(f"Track error: {e}")
 
+        # Поиск новых сигналов
         for symbol in self.cfg['symbols']:
             try:
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, symbol, self.cfg['timeframe'], limit=50)
@@ -149,7 +151,7 @@ class SignalBot:
                     margin = pos_size_usdt / self.cfg['leverage']
                     size_tokens = pos_size_usdt / price
                     
-                    # Сохраняем size_usdt для команды /active
+                    # Сохраняем в список активных сделок
                     self.active_trades.append({
                         'symbol': symbol, 'side': side, 'entry': price, 
                         'sl': sl, 'tp': tp, 'size_usdt': pos_size_usdt
@@ -160,68 +162,30 @@ class SignalBot:
                         f"═══════════════════════════════════\n"
                         f"<b>{icon}</b>\n"
                         f"═══════════════════════════════════\n\n"
-                        f"Я бы {'купил' if side=='LONG' else 'продал'} сейчас {symbol}\n\n"
                         f"📍 Цена входа:  <code>{price}</code>\n"
                         f"🛑 Стоп-лосс:   <code>{sl}</code>  (-{self.cfg['stop_loss_pct']*100}%)\n"
                         f"🎯 Тейк-профит: <code>{tp}</code>  (+{self.cfg['take_profit_pct']*100}%)\n\n"
-                        f"⚖️  Плечо:       x{self.cfg['leverage']}\n"
-                        f"💰 Маржа:       {round(margin, 2)} USDT\n"
-                        f"📦 Размер:      {round(size_tokens, 6)}\n"
+                        f"💰 Маржа:       {round(margin, 2)} USDT (x{self.cfg['leverage']})\n"
                         f"💵 Позиция:     {round(pos_size_usdt, 2)} USDT\n"
-                        f"⚠️  Риск:        {round(risk_usdt, 2)} USDT ({self.cfg['risk_per_trade']*100}% депо)\n\n"
-                        f"📊 RR:  1 : 3\n\n"
-                        f"📋 Причина входа:\n"
-                        f"   1. EMA пересеклась {'снизу вверх' if side=='LONG' else 'сверху вниз'} ✓\n"
-                        f"   2. RSI(14) = {round(c['rsi'], 1)} ✓\n"
-                        f"   3. Объём {round(c['volume'], 1)} > средн. {round(c['vol_ma'], 1)} ✓\n\n"
-                        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"⚠️  Риск:        {round(risk_usdt, 2)} USDT\n\n"
+                        f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
                         f"═══════════════════════════════════"
                     )
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error {symbol}: {e}")
 
-# --- КОМАНДЫ ---
+# --- КОМАНДЫ TELEGRAM ---
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Бот на связи!\n\nКоманды:\n/trades - история сделок\n/pnl - общая статистика\n/active - текущие позиции\n/id - узнать свой ID")
-
-async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Твой chat_id: {update.effective_chat.id}")
-
-async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not os.path.exists('history.csv'):
-            await update.message.reply_text("История пока пуста.")
-            return
-        df = pd.read_csv('history.csv')
-        if df.empty:
-            await update.message.reply_text("Сделок еще не было.")
-            return
-        
-        total_profit = df['profit_usdt'].sum()
-        winrate = (len(df[df['result'] == 'PROFIT']) / len(df)) * 100
-        avg_roi = df['profit_pct'].mean()
-        
-        msg = (
-            f"<b>📊 Статистика торговли:</b>\n\n"
-            f"💰 Общий PnL: <b>{round(total_profit, 2)} USDT</b>\n"
-            f"📈 Средний ROI: <b>{round(avg_roi, 2)}%</b>\n"
-            f"🎯 Winrate: <b>{round(winrate, 1)}%</b>\n\n"
-            f"✅ Профит-сделки: {len(df[df['result'] == 'PROFIT'])}\n"
-            f"❌ Стоп-лоссы: {len(df[df['result'] == 'LOSS'])}\n"
-            f"📚 Всего сделок: {len(df)}"
-        )
-        await update.message.reply_html(msg)
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка расчета: {e}")
+    await update.message.reply_text("🤖 Бот запущен!\n\n/active - текущие позиции\n/pnl - статистика\n/trades - история")
 
 async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_instance
     if not bot_instance or not bot_instance.active_trades:
-        await update.message.reply_text("Нет активных позиций.")
+        await update.message.reply_text("Нет открытых позиций.")
         return
 
-    msg = "<b>⏳ Текущие открытые позиции:</b>\n\n"
+    msg = "<b>⏳ Текущие открытые сделки:</b>\n\n"
     total_unrealized = 0
 
     for t in bot_instance.active_trades:
@@ -229,23 +193,35 @@ async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, t['symbol'])
             curr_p = ticker['last']
             
-            # Расчет текущей прибыли
+            # Считаем прибыль
             diff_pct = ((curr_p - t['entry']) / t['entry']) if t['side'] == 'LONG' else ((t['entry'] - curr_p) / t['entry'])
             pnl_usdt = t['size_usdt'] * diff_pct
             total_unrealized += pnl_usdt
             
-            status_icon = "📈" if pnl_usdt >= 0 else "📉"
+            icon = "📈" if pnl_usdt >= 0 else "📉"
             msg += (
-                f"{status_icon} <b>{t['symbol']} ({t['side']})</b>\n"
-                f"Вход: <code>{t['entry']}</code> → Сейчас: <code>{curr_p}</code>\n"
+                f"{icon} <b>{t['symbol']} ({t['side']})</b>\n"
+                f"Вход: <code>{t['entry']}</code>\n"
+                f"Цена: <code>{curr_p}</code>\n"
                 f"PnL: <b>{round(pnl_usdt, 2)}$</b> ({round(diff_pct*100, 2)}%)\n\n"
             )
-        except Exception as e:
-            logger.error(f"Active cmd error for {t['symbol']}: {e}")
+        except:
             msg += f"❌ Ошибка данных по {t['symbol']}\n\n"
 
     msg += f"══════════════════\n<b>Итого PnL: {round(total_unrealized, 2)}$</b>"
     await update.message.reply_html(msg)
+
+async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not os.path.exists('history.csv'):
+            await update.message.reply_text("История пуста.")
+            return
+        df = pd.read_csv('history.csv')
+        total_profit = df['profit_usdt'].sum()
+        winrate = (len(df[df['result'] == 'PROFIT']) / len(df)) * 100
+        msg = f"<b>📊 Статистика:</b>\n\n💰 Профит: <b>{round(total_profit, 2)}$</b>\n🎯 Winrate: <b>{round(winrate, 1)}%</b>"
+        await update.message.reply_html(msg)
+    except: await update.message.reply_text("Ошибка расчета.")
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(TradeJournal().get_history())
@@ -257,35 +233,25 @@ async def handle_render_ping(reader, writer):
 
 async def main():
     global bot_instance
-    logger.info("🚀 БОТ ЗАПУСКАЕТСЯ...")
-    
     bot_instance = SignalBot(CONFIG)
     app = Application.builder().token(CONFIG['telegram_token']).build()
     
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("trades", trades_cmd))
-    app.add_handler(CommandHandler("pnl", pnl_cmd))
     app.add_handler(CommandHandler("active", active_cmd))
-    app.add_handler(CommandHandler("id", id_cmd))
+    app.add_handler(CommandHandler("pnl", pnl_cmd))
+    app.add_handler(CommandHandler("trades", trades_cmd))
 
     port = int(os.environ.get("PORT", 10000))
     await asyncio.start_server(handle_render_ping, '0.0.0.0', port)
-    logger.info(f"✅ Web server active on port {port}")
 
     async with app:
         await app.bot.delete_webhook(drop_pending_updates=True)
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        logger.info("🤖 Scanning started...")
         while True:
             await bot_instance.scan(app.bot)
             await asyncio.sleep(60)
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Stopped.")
-    except Exception as e:
-        logger.critical(f"FATAL: {e}")
+    asyncio.run(main())
