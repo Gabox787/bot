@@ -8,7 +8,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
 # Настройка логов
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    handlers=[logging.StreamHandler()]
+)
 logger = logging.getLogger(__name__)
 
 # --- CONFIG ---
@@ -26,11 +30,13 @@ CONFIG = {
     'rsi_period': 14,
     'vol_ma_period': 20,
     'balance': 1000,
+    'leverage': 3,
     'risk_per_trade': 0.02,
     'stop_loss_pct': 0.01,
     'take_profit_pct': 0.03,
     'breakeven_trigger': 0.01,    # Активация трейлинга при +1.0%
-    'trailing_distance': 0.007    # Дистанция 0.7%
+    'trailing_distance': 0.007,   # Дистанция отступа 0.7%
+    'check_interval': 60
 }
 
 bot_instance = None
@@ -63,6 +69,18 @@ class TradeJournal:
             logger.error(f"Journal error: {e}")
             return None
 
+    def get_history(self):
+        try:
+            if not os.path.exists(self.filename): return "История пуста."
+            df = pd.read_csv(self.filename).tail(10)
+            if df.empty: return "История сделок пока пуста."
+            msg = "<b>📜 Последние 10 сделок:</b>\n\n"
+            for _, r in df.iterrows():
+                icon = "✅" if r['profit_usdt'] > 0 else "❌"
+                msg += f"{icon} {r['symbol']} {r['side']}: <b>{r['profit_usdt']}$</b> ({r['profit_pct']}%)\n"
+            return msg
+        except: return "Ошибка при чтении истории."
+
 def add_indicators(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     df = df.copy()
     df['ema_fast'] = df['close'].ewm(span=cfg['ema_fast'], adjust=False).mean()
@@ -88,14 +106,14 @@ class SignalBot:
         self.last_candle = {}
 
     async def scan(self, app_bot):
-        # 1. МОНИТОРИНГ СДЕЛОК
+        # 1. МОНИТОРИНГ
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
                 curr_p = ticker['last']
                 profit_now = ((curr_p - trade['entry']) / trade['entry']) if trade['side'] == 'LONG' else ((trade['entry'] - curr_p) / trade['entry'])
                 
-                # Обновление Трейлинг-стопа
+                # ТРЕЙЛИНГ
                 if profit_now >= self.cfg['breakeven_trigger']:
                     if trade['side'] == 'LONG':
                         new_sl = round(curr_p * (1 - self.cfg['trailing_distance']), 6)
@@ -104,7 +122,7 @@ class SignalBot:
                         new_sl = round(curr_p * (1 + self.cfg['trailing_distance']), 6)
                         if new_sl < trade['sl']: trade['sl'] = new_sl
 
-                # Проверка выхода по индикаторам (разворот тренда)
+                # ВЫХОД ПО ТРЕНДУ
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, trade['symbol'], self.cfg['timeframe'], limit=50)
                 df = add_indicators(pd.DataFrame(raw, columns=['ts','open','high','low','close','volume']), self.cfg)
                 c = df.iloc[-1]
@@ -117,14 +135,18 @@ class SignalBot:
                 is_sl = (trade['side'] == 'LONG' and curr_p <= trade['sl']) or (trade['side'] == 'SHORT' and curr_p >= trade['sl'])
 
                 if is_tp or is_sl or trend_exit:
-                    res = 'PROFIT' if is_tp else ('BE/TRAIL' if profit_now > 0 else ('SIGNAL_EXIT' if trend_exit else 'LOSS'))
+                    res = 'PROFIT' if is_tp else ('TRAILING' if profit_now > 0 else ('SIGNAL_EXIT' if trend_exit else 'LOSS'))
                     data = self.journal.log_trade(trade['symbol'], trade['side'], res, trade['entry'], curr_p)
+                    
                     icon = "✅" if data['profit_usdt'] > 0 else "❌"
-                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=f"{icon} <b>Сделка закрыта: {trade['symbol']}</b>\nПрофит: {data['profit_usdt']}$", parse_mode='HTML')
+                    reason = "Take Profit" if is_tp else ("Trailing SL" if profit_now > 0 else "Signal Change")
+                    
+                    text = f"{icon} <b>Сделка закрыта</b>\n\nМонета: {trade['symbol']}\nПричина: {reason}\nПрибыль: <b>{data['profit_usdt']}$</b>"
+                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=text, parse_mode='HTML')
                     self.active_trades.remove(trade)
             except Exception as e: logger.error(f"Track error: {e}")
 
-        # 2. ПОИСК НОВЫХ СИГНАЛОВ
+        # 2. ПОИСК
         for symbol in self.cfg['symbols']:
             if any(t['symbol'] == symbol for t in self.active_trades): continue
             try:
@@ -140,37 +162,77 @@ class SignalBot:
                 if side:
                     self.last_candle[symbol] = str(c['ts'])
                     price = c['close']
-                    sl = round(price * (0.99 if side == 'LONG' else 1.01), 6)
-                    tp = round(price * (1.03 if side == 'LONG' else 0.97), 6)
-                    trade_id = f"cl_{symbol.replace('/', '_')}_{datetime.now().microsecond}"
+                    precision = 4 if price < 1 else 2
+                    sl = round(price * (1 - self.cfg['stop_loss_pct'] if side == 'LONG' else 1 + self.cfg['stop_loss_pct']), precision)
+                    tp = round(price * (1 + self.cfg['take_profit_pct'] if side == 'LONG' else 1 - self.cfg['take_profit_pct']), precision)
                     
-                    self.active_trades.append({'symbol': symbol, 'side': side, 'entry': price, 'sl': sl, 'tp': tp, 'trade_id': trade_id})
-                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=f"🚀 <b>Вход {side}: {symbol}</b>\nЦена: {price}", parse_mode='HTML')
+                    risk_usdt = self.cfg['balance'] * self.cfg['risk_per_trade']
+                    pos_size = round(risk_usdt / self.cfg['stop_loss_pct'], 2)
+                    
+                    trade_id = f"cl_{symbol.replace('/', '_')}_{datetime.now().microsecond}"
+                    self.active_trades.append({'symbol': symbol, 'side': side, 'entry': price, 'sl': sl, 'tp': tp, 'size_usdt': pos_size, 'trade_id': trade_id})
+                    
+                    keyboard = [[InlineKeyboardButton("❌ Закрыть вручную", callback_data=trade_id)]]
+                    msg = (
+                        f"═══════════════════\n"
+                        f"🚀 <b>Вход {side}: {symbol}</b>\n"
+                        f"═══════════════════\n"
+                        f"📍 Цена: {price}\n"
+                        f"🛑 Стоп: {sl}\n"
+                        f"🎯 Тейк: {tp}\n"
+                        f"💰 Позиция: {pos_size} USDT"
+                    )
+                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
             except Exception as e: logger.error(f"Scan error: {e}")
 
-# --- (Команды /start, /active, /pnl и main остаются такими же) ---
+# --- ОБРАБОТЧИКИ ---
 
-async def handle_render_ping(reader, writer):
-    writer.write(b"HTTP/1.1 200 OK\r\n\r\nOK"); await writer.drain(); writer.close()
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    trade = next((t for t in bot_instance.active_trades if t.get('trade_id') == query.data), None)
+    if trade:
+        ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, trade['symbol'])
+        data = bot_instance.journal.log_trade(trade['symbol'], trade['side'], 'MANUAL', trade['entry'], ticker['last'])
+        bot_instance.active_trades.remove(trade)
+        await query.edit_message_text(f"🔵 Закрыто вручную: <b>{data['profit_usdt']}$</b>", parse_mode='HTML')
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот запущен в свободном режиме!")
+    await update.message.reply_text("🤖 Бот запущен! Команды: /active, /pnl, /history")
 
 async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not bot_instance.active_trades: return await update.message.reply_text("Нет сделок.")
-    msg = "<b>Активные сделки:</b>\n" + "\n".join([f"🔸 {t['symbol']} ({t['side']})" for t in bot_instance.active_trades])
+    if not bot_instance.active_trades: return await update.message.reply_text("Нет открытых сделок.")
+    msg = "<b>⏳ Текущие сделки:</b>\n\n"
+    for t in bot_instance.active_trades:
+        ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, t['symbol'])
+        curr_p = ticker['last']
+        diff = ((curr_p - t['entry']) / t['entry']) if t['side'] == 'LONG' else ((t['entry'] - curr_p) / t['entry'])
+        pnl = round(t['size_usdt'] * diff, 2)
+        msg += f"🔸 <b>{t['symbol']}</b> ({t['side']}): {pnl}$ ({round(diff*100, 2)}%)\n   SL: {t['sl']}\n"
     await update.message.reply_html(msg)
 
 async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not os.path.exists('history.csv'): return await update.message.reply_text("История пуста.")
     df = pd.read_csv('history.csv')
-    await update.message.reply_html(f"<b>Общий PnL: {round(df['profit_usdt'].sum(), 2)}$</b>")
+    await update.message.reply_html(f"<b>📊 Общий PnL: {round(df['profit_usdt'].sum(), 2)}$</b>\nСделок: {len(df)}")
+
+async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_html(bot_instance.journal.get_history())
+
+async def handle_render_ping(reader, writer):
+    writer.write(b"HTTP/1.1 200 OK\r\n\r\nOK"); await writer.drain(); writer.close()
 
 async def main():
     global bot_instance
     bot_instance = SignalBot(CONFIG)
     app = Application.builder().token(CONFIG['telegram_token']).build()
-    app.add_handlers([CommandHandler("start", start_cmd), CommandHandler("active", active_cmd), CommandHandler("pnl", pnl_cmd)])
+    app.add_handlers([
+        CommandHandler("start", start_cmd),
+        CommandHandler("active", active_cmd),
+        CommandHandler("pnl", pnl_cmd),
+        CommandHandler("history", history_cmd),
+        CallbackQueryHandler(button_handler)
+    ])
     await asyncio.start_server(handle_render_ping, '0.0.0.0', int(os.environ.get("PORT", 10000)))
     async with app:
         await app.bot.delete_webhook(drop_pending_updates=True)
