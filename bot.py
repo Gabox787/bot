@@ -37,10 +37,7 @@ CONFIG = {
     'check_interval': 60
 }
 
-# Переменная для доступа к данным бота из команд Telegram
 bot_instance = None
-
-# --- ЛОГИКА ТОРГОВЛИ ---
 
 class TradeJournal:
     def __init__(self, filename='history.csv'):
@@ -105,7 +102,6 @@ class SignalBot:
         self.last_candle = {}
 
     async def scan(self, app_bot):
-        # Проверка закрытия сделок
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
@@ -119,13 +115,12 @@ class SignalBot:
                     data = self.journal.log_trade(trade['symbol'], trade['side'], res, trade['entry'], exit_p)
                     
                     text = f"{'✅' if is_tp else '❌'} <b>Сделка закрыта!</b>\n\n" \
-                           f"Монета: {trade['symbol']}\n" \
+                           f"Монета: <b>{trade['symbol']}</b>\n" \
                            f"Прибыль: <b>{data['profit_usdt']}$</b> ({data['profit_pct']}%)"
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=text, parse_mode='HTML')
                     self.active_trades.remove(trade)
             except Exception as e: logger.error(f"Track error: {e}")
 
-        # Поиск новых сигналов
         for symbol in self.cfg['symbols']:
             try:
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, symbol, self.cfg['timeframe'], limit=50)
@@ -149,9 +144,7 @@ class SignalBot:
                     risk_usdt = self.cfg['balance'] * self.cfg['risk_per_trade']
                     pos_size_usdt = risk_usdt / self.cfg['stop_loss_pct']
                     margin = pos_size_usdt / self.cfg['leverage']
-                    size_tokens = pos_size_usdt / price
                     
-                    # Сохраняем в список активных сделок
                     self.active_trades.append({
                         'symbol': symbol, 'side': side, 'entry': price, 
                         'sl': sl, 'tp': tp, 'size_usdt': pos_size_usdt
@@ -161,13 +154,14 @@ class SignalBot:
                     msg = (
                         f"═══════════════════════════════════\n"
                         f"<b>{icon}</b>\n"
+                        f"💰 <b>Монета: {symbol}</b>\n"  # Добавлено название монеты
                         f"═══════════════════════════════════\n\n"
                         f"📍 Цена входа:  <code>{price}</code>\n"
                         f"🛑 Стоп-лосс:   <code>{sl}</code>  (-{self.cfg['stop_loss_pct']*100}%)\n"
                         f"🎯 Тейк-профит: <code>{tp}</code>  (+{self.cfg['take_profit_pct']*100}%)\n\n"
                         f"💰 Маржа:       {round(margin, 2)} USDT (x{self.cfg['leverage']})\n"
                         f"💵 Позиция:     {round(pos_size_usdt, 2)} USDT\n"
-                        f"⚠️  Риск:        {round(risk_usdt, 2)} USDT\n\n"
+                        f"⚠️ Риск:        {round(risk_usdt, 2)} USDT\n\n"
                         f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
                         f"═══════════════════════════════════"
                     )
@@ -192,12 +186,9 @@ async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, t['symbol'])
             curr_p = ticker['last']
-            
-            # Считаем прибыль
             diff_pct = ((curr_p - t['entry']) / t['entry']) if t['side'] == 'LONG' else ((t['entry'] - curr_p) / t['entry'])
             pnl_usdt = t['size_usdt'] * diff_pct
             total_unrealized += pnl_usdt
-            
             icon = "📈" if pnl_usdt >= 0 else "📉"
             msg += (
                 f"{icon} <b>{t['symbol']} ({t['side']})</b>\n"
