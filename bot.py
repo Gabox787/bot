@@ -74,7 +74,7 @@ class TradeJournal:
             if df.empty: return "История сделок пока пуста."
             msg = "<b>📜 Последние сделки:</b>\n\n"
             for _, r in df.iterrows():
-                icon = "✅" if r['result'] in ['PROFIT', 'MANUAL'] else "❌"
+                icon = "✅" if r['result'] in ['PROFIT', 'MANUAL', 'SIGNAL_EXIT'] else "❌"
                 msg += f"{icon} {r['symbol']} {r['side']}: <b>{r['profit_usdt']}$</b> ({r['profit_pct']}%)\n"
             return msg
         except: return "Ошибка истории."
@@ -104,27 +104,56 @@ class SignalBot:
         self.last_candle = {}
 
     async def scan(self, app_bot):
-        # Авто-проверка SL/TP
+        # 1. ПРОВЕРКА ЗАКРЫТИЯ (SL, TP И ПОТЕРЯ УСЛОВИЙ)
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
                 curr_p = ticker['last']
+                
+                # Получаем свежие индикаторы для проверки условий выхода
+                raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, trade['symbol'], self.cfg['timeframe'], limit=50)
+                df = pd.DataFrame(raw, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+                df = add_indicators(df, self.cfg)
+                c = df.iloc[-1] # Текущая незакрытая свеча для быстрой реакции
+
+                # Условия стандартного закрытия
                 is_tp = (trade['side'] == 'LONG' and curr_p >= trade['tp']) or (trade['side'] == 'SHORT' and curr_p <= trade['tp'])
                 is_sl = (trade['side'] == 'LONG' and curr_p <= trade['sl']) or (trade['side'] == 'SHORT' and curr_p >= trade['sl'])
                 
-                if is_tp or is_sl:
-                    res = 'PROFIT' if is_tp else 'LOSS'
-                    exit_p = trade['tp'] if is_tp else trade['sl']
-                    data = self.journal.log_trade(trade['symbol'], trade['side'], res, trade['entry'], exit_p)
+                # НОВОЕ: Проверка на потерю условий (Разворот тренда)
+                signal_exit = False
+                exit_reason = ""
+                
+                if trade['side'] == 'LONG':
+                    if c['ema_fast'] < c['ema_slow']: # Обратное пересечение
+                        signal_exit, exit_reason = True, "Trend Lost (EMA Cross)"
+                    elif c['rsi'] > 75: # Перекупленность
+                        signal_exit, exit_reason = True, "Overbought (RSI > 75)"
+                else: # SHORT
+                    if c['ema_fast'] > c['ema_slow']: # Обратное пересечение
+                        signal_exit, exit_reason = True, "Trend Lost (EMA Cross)"
+                    elif c['rsi'] < 25: # Перепроданность
+                        signal_exit, exit_reason = True, "Oversold (RSI < 25)"
+
+                if is_tp or is_sl or signal_exit:
+                    res_type = 'SIGNAL_EXIT' if signal_exit else ('PROFIT' if is_tp else 'LOSS')
+                    exit_price = curr_p
+                    data = self.journal.log_trade(trade['symbol'], trade['side'], res_type, trade['entry'], exit_price)
                     
-                    text = f"{'✅' if is_tp else '❌'} <b>Сделка закрыта (Авто)!</b>\n\n" \
+                    icon = "✅" if data['profit_usdt'] >= 0 else "❌"
+                    title = "Сделка закрыта (Авто)" if not signal_exit else "Выход по сигналу (Trend Change)"
+                    
+                    text = f"{icon} <b>{title}</b>\n\n" \
                            f"Монета: <b>{trade['symbol']}</b>\n" \
+                           f"Причина: {exit_reason if signal_exit else ('Take Profit' if is_tp else 'Stop Loss')}\n" \
                            f"Прибыль: <b>{data['profit_usdt']}$</b> ({data['profit_pct']}%)"
+                    
                     await app_bot.send_message(chat_id=self.cfg['chat_id'], text=text, parse_mode='HTML')
                     self.active_trades.remove(trade)
+                    
             except Exception as e: logger.error(f"Track error: {e}")
 
-        # Поиск новых сигналов
+        # 2. ПОИСК НОВЫХ СИГНАЛОВ
         for symbol in self.cfg['symbols']:
             try:
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, symbol, self.cfg['timeframe'], limit=50)
@@ -147,9 +176,7 @@ class SignalBot:
                     
                     risk_usdt = self.cfg['balance'] * self.cfg['risk_per_trade']
                     pos_size_usdt = risk_usdt / self.cfg['stop_loss_pct']
-                    margin = pos_size_usdt / self.cfg['leverage']
                     
-                    # Создаем уникальный ID сделки для кнопки
                     trade_id = f"close_{symbol.replace('/', '_')}_{datetime.now().microsecond}"
                     
                     self.active_trades.append({
@@ -158,8 +185,6 @@ class SignalBot:
                     })
                     
                     icon = "🟢 LONG (Покупка)" if side == 'LONG' else "🔴 SHORT (Продажа)"
-                    
-                    # Кнопка для закрытия
                     keyboard = [[InlineKeyboardButton("❌ Закрыть вручную", callback_data=trade_id)]]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -182,45 +207,30 @@ class SignalBot:
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     global bot_instance
     trade_id = query.data
     
-    # Ищем сделку в списке активных по trade_id
-    trade_to_close = None
-    for t in bot_instance.active_trades:
-        if t.get('trade_id') == trade_id:
-            trade_to_close = t
-            break
+    trade_to_close = next((t for t in bot_instance.active_trades if t.get('trade_id') == trade_id), None)
             
     if trade_to_close:
         try:
             ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, trade_to_close['symbol'])
             exit_price = ticker['last']
-            
-            # Логируем в историю
-            data = bot_instance.journal.log_trade(
-                trade_to_close['symbol'], trade_to_close['side'], 'MANUAL', trade_to_close['entry'], exit_price
-            )
-            
-            # Убираем из активных
+            data = bot_instance.journal.log_trade(trade_to_close['symbol'], trade_to_close['side'], 'MANUAL', trade_to_close['entry'], exit_price)
             bot_instance.active_trades.remove(trade_to_close)
             
-            # Редактируем сообщение: убираем кнопку и пишем результат
             res_icon = "🔵" if data['profit_usdt'] >= 0 else "🟠"
             new_text = query.message.text + f"\n\n{res_icon} <b>ЗАКРЫТО ВРУЧНУЮ</b>\nЦена: {exit_price}\nПрофит: <b>{data['profit_usdt']}$</b>"
             await query.edit_message_text(text=new_text, parse_mode='HTML')
-            
         except Exception as e:
             logger.error(f"Manual close error: {e}")
-            await query.message.reply_text("Ошибка при закрытии.")
     else:
-        await query.edit_message_text(text="⚠️ Сделка уже закрыта или не найдена.")
+        await query.edit_message_text(text="⚠️ Сделка уже закрыта.")
 
 # --- КОМАНДЫ ---
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Бот готов!\n\n/active - текущие сделки\n/pnl - общая прибыль")
+    await update.message.reply_text("🤖 Бот готов к торговле!\n\n/active - текущие сделки\n/pnl - общая прибыль")
 
 async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_instance
@@ -261,7 +271,7 @@ async def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("active", active_cmd))
     app.add_handler(CommandHandler("pnl", pnl_cmd))
-    app.add_handler(CallbackQueryHandler(button_handler)) # Слушаем нажатия кнопок
+    app.add_handler(CallbackQueryHandler(button_handler))
 
     port = int(os.environ.get("PORT", 10000))
     await asyncio.start_server(handle_render_ping, '0.0.0.0', port)
