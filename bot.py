@@ -8,11 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
 # Настройка логов
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- CONFIG ---
@@ -30,13 +26,11 @@ CONFIG = {
     'rsi_period': 14,
     'vol_ma_period': 20,
     'balance': 1000,
-    'leverage': 3,
     'risk_per_trade': 0.02,
     'stop_loss_pct': 0.01,
     'take_profit_pct': 0.03,
-    'breakeven_trigger': 0.01,    # Активация при +1.0%
-    'trailing_distance': 0.007,   # Дистанция отступа 0.7%
-    'check_interval': 60
+    'breakeven_trigger': 0.01,    # Активация трейлинга при +1.0%
+    'trailing_distance': 0.007    # Дистанция 0.7%
 }
 
 bot_instance = None
@@ -94,51 +88,45 @@ class SignalBot:
         self.last_candle = {}
 
     async def scan(self, app_bot):
+        # 1. МОНИТОРИНГ СДЕЛОК
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
                 curr_p = ticker['last']
-                
-                # Текущий профит в %
                 profit_now = ((curr_p - trade['entry']) / trade['entry']) if trade['side'] == 'LONG' else ((trade['entry'] - curr_p) / trade['entry'])
                 
-                # --- ЛОГИКА ТРЕЙЛИНГ-СТОПА ---
+                # Обновление Трейлинг-стопа
                 if profit_now >= self.cfg['breakeven_trigger']:
                     if trade['side'] == 'LONG':
                         new_sl = round(curr_p * (1 - self.cfg['trailing_distance']), 6)
-                        if new_sl > trade['sl']:
-                            trade['sl'] = new_sl
-                    else: # SHORT
+                        if new_sl > trade['sl']: trade['sl'] = new_sl
+                    else:
                         new_sl = round(curr_p * (1 + self.cfg['trailing_distance']), 6)
-                        if new_sl < trade['sl']:
-                            trade['sl'] = new_sl
+                        if new_sl < trade['sl']: trade['sl'] = new_sl
 
-                # Проверка индикаторов для выхода по тренду
+                # Проверка выхода по индикаторам (разворот тренда)
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, trade['symbol'], self.cfg['timeframe'], limit=50)
                 df = add_indicators(pd.DataFrame(raw, columns=['ts','open','high','low','close','volume']), self.cfg)
                 c = df.iloc[-1]
-
-                is_tp = (trade['side'] == 'LONG' and curr_p >= trade['tp']) or (trade['side'] == 'SHORT' and curr_p <= trade['tp'])
-                is_sl = (trade['side'] == 'LONG' and curr_p <= trade['sl']) or (trade['side'] == 'SHORT' and curr_p >= trade['sl'])
                 
-                # Выход по потере тренда
                 trend_exit = False
                 if trade['side'] == 'LONG' and (c['ema_fast'] < c['ema_slow'] or c['rsi'] > 75): trend_exit = True
                 if trade['side'] == 'SHORT' and (c['ema_fast'] > c['ema_slow'] or c['rsi'] < 25): trend_exit = True
 
+                is_tp = (trade['side'] == 'LONG' and curr_p >= trade['tp']) or (trade['side'] == 'SHORT' and curr_p <= trade['tp'])
+                is_sl = (trade['side'] == 'LONG' and curr_p <= trade['sl']) or (trade['side'] == 'SHORT' and curr_p >= trade['sl'])
+
                 if is_tp or is_sl or trend_exit:
-                    res = 'PROFIT' if is_tp else ('BE/TRAIL' if profit_now > 0 else 'LOSS')
+                    res = 'PROFIT' if is_tp else ('BE/TRAIL' if profit_now > 0 else ('SIGNAL_EXIT' if trend_exit else 'LOSS'))
                     data = self.journal.log_trade(trade['symbol'], trade['side'], res, trade['entry'], curr_p)
-                    
-                    icon = "✅" if is_tp else ("🛡️" if profit_now > 0 else "❌")
-                    msg = f"{icon} <b>Сделка закрыта</b>\n\nМонета: {trade['symbol']}\nИтог: <b>{data['profit_usdt']}$</b> ({data['profit_pct']}%)"
-                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML')
+                    icon = "✅" if data['profit_usdt'] > 0 else "❌"
+                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=f"{icon} <b>Сделка закрыта: {trade['symbol']}</b>\nПрофит: {data['profit_usdt']}$", parse_mode='HTML')
                     self.active_trades.remove(trade)
-                    
             except Exception as e: logger.error(f"Track error: {e}")
 
-        # Поиск новых сигналов
+        # 2. ПОИСК НОВЫХ СИГНАЛОВ
         for symbol in self.cfg['symbols']:
+            if any(t['symbol'] == symbol for t in self.active_trades): continue
             try:
                 raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, symbol, self.cfg['timeframe'], limit=50)
                 df = add_indicators(pd.DataFrame(raw, columns=['ts','open','high','low','close','volume']).iloc[:-1], self.cfg)
@@ -154,46 +142,35 @@ class SignalBot:
                     price = c['close']
                     sl = round(price * (0.99 if side == 'LONG' else 1.01), 6)
                     tp = round(price * (1.03 if side == 'LONG' else 0.97), 6)
+                    trade_id = f"cl_{symbol.replace('/', '_')}_{datetime.now().microsecond}"
                     
-                    trade_id = f"close_{symbol.replace('/', '_')}_{datetime.now().microsecond}"
-                    self.active_trades.append({'symbol': symbol, 'side': side, 'entry': price, 'sl': sl, 'tp': tp, 'size_usdt': 600, 'trade_id': trade_id})
-                    
-                    keyboard = [[InlineKeyboardButton("❌ Закрыть вручную", callback_data=trade_id)]]
-                    msg = f"🚀 <b>Вход {side}: {symbol}</b>\nЦена: {price}\n🛡️ Трейлинг: 1.0% | Дистанция: 0.7%"
-                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+                    self.active_trades.append({'symbol': symbol, 'side': side, 'entry': price, 'sl': sl, 'tp': tp, 'trade_id': trade_id})
+                    await app_bot.send_message(chat_id=self.cfg['chat_id'], text=f"🚀 <b>Вход {side}: {symbol}</b>\nЦена: {price}", parse_mode='HTML')
             except Exception as e: logger.error(f"Scan error: {e}")
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    trade = next((t for t in bot_instance.active_trades if t.get('trade_id') == query.data), None)
-    if trade:
-        ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, trade['symbol'])
-        data = bot_instance.journal.log_trade(trade['symbol'], trade['side'], 'MANUAL', trade['entry'], ticker['last'])
-        bot_instance.active_trades.remove(trade)
-        await query.edit_message_text(f"🔵 Закрыто вручную: {data['profit_usdt']}$")
+# --- (Команды /start, /active, /pnl и main остаются такими же) ---
+
+async def handle_render_ping(reader, writer):
+    writer.write(b"HTTP/1.1 200 OK\r\n\r\nOK"); await writer.drain(); writer.close()
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот запущен. Жду сигналы!")
+    await update.message.reply_text("Бот запущен в свободном режиме!")
 
 async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not bot_instance.active_trades: return await update.message.reply_text("Нет сделок.")
-    msg = "<b>Активные сделки:</b>\n" + "\n".join([f"🔸 {t['symbol']} (SL: {t['sl']})" for t in bot_instance.active_trades])
+    msg = "<b>Активные сделки:</b>\n" + "\n".join([f"🔸 {t['symbol']} ({t['side']})" for t in bot_instance.active_trades])
     await update.message.reply_html(msg)
 
 async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not os.path.exists('history.csv'): return await update.message.reply_text("История пуста.")
     df = pd.read_csv('history.csv')
-    await update.message.reply_html(f"<b>PnL: {round(df['profit_usdt'].sum(), 2)}$</b>")
-
-async def handle_render_ping(reader, writer):
-    writer.write(b"HTTP/1.1 200 OK\r\n\r\nOK")
-    await writer.drain(); writer.close()
+    await update.message.reply_html(f"<b>Общий PnL: {round(df['profit_usdt'].sum(), 2)}$</b>")
 
 async def main():
     global bot_instance
     bot_instance = SignalBot(CONFIG)
     app = Application.builder().token(CONFIG['telegram_token']).build()
-    app.add_handlers([CommandHandler("start", start_cmd), CommandHandler("active", active_cmd), CommandHandler("pnl", pnl_cmd), CallbackQueryHandler(button_handler)])
+    app.add_handlers([CommandHandler("start", start_cmd), CommandHandler("active", active_cmd), CommandHandler("pnl", pnl_cmd)])
     await asyncio.start_server(handle_render_ping, '0.0.0.0', int(os.environ.get("PORT", 10000)))
     async with app:
         await app.bot.delete_webhook(drop_pending_updates=True)
