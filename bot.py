@@ -32,6 +32,7 @@ CONFIG = {
     'take_profit_pct': 0.03,
     'breakeven_trigger': 0.01,
     'trailing_distance': 0.007,
+    'commission_rate': 0.00055 * 2,
 }
 
 bot_instance = None
@@ -65,7 +66,9 @@ class TradeJournal:
             current_balance = get_current_balance()
             risk_amount = current_balance * CONFIG['risk_per_trade']
             position_size_usdt = risk_amount / CONFIG['stop_loss_pct']
-            profit_usdt = position_size_usdt * price_diff_pct
+
+            commission_usdt = position_size_usdt * CONFIG['commission_rate']
+            profit_usdt = (position_size_usdt * price_diff_pct) - commission_usdt
 
             now = datetime.now()
             duration = int((now - start_time).total_seconds() / 60)
@@ -77,7 +80,7 @@ class TradeJournal:
                 'side': side,
                 'result': result,
                 'profit_usdt': round(profit_usdt, 2),
-                'profit_pct': round(price_diff_pct * 100, 2),
+                'profit_pct': round((price_diff_pct - CONFIG['commission_rate']) * 100, 2),
                 'duration_min': duration
             }
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -484,7 +487,6 @@ async def main():
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
 
-        # Ежедневный отчёт в 23:50
         app.job_queue.run_daily(send_daily_report, time=dt_time(hour=23, minute=50))
 
         logger.info("Bot fully started")
