@@ -588,6 +588,16 @@ async def health_handler(reader, writer):
 
 async def main():
     global bot_instance
+
+    # === ПЕРВЫМ ДЕЛОМ открываем порт для Render ===
+    port = int(os.environ.get("PORT", 10000))
+    server = await asyncio.start_server(health_handler, '0.0.0.0', port)
+    logger.info(f"Health check server started on port {port}")
+
+    # Даём Render время обнаружить порт
+    await asyncio.sleep(2)
+
+    # === Потом инициализируем всё остальное ===
     bot_instance = SignalBot(CONFIG)
 
     app = Application.builder().token(CONFIG['telegram_token']).build()
@@ -602,11 +612,6 @@ async def main():
         CommandHandler("set_tp", set_tp_cmd),
         CallbackQueryHandler(button_handler),
     ])
-
-    # HTTP-сервер заглушка для Render (чтобы не ругался на порт)
-    port = int(os.environ.get("PORT", 10000))
-    await asyncio.start_server(health_handler, '0.0.0.0', port)
-    logger.info(f"Health check server started on port {port}")
 
     async with app:
         await app.bot.delete_webhook(drop_pending_updates=True)
