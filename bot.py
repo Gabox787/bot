@@ -571,7 +571,7 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Daily report error: {e}")
 
 
-# --- HEALTH CHECK ---
+# --- HEALTH CHECK для Render ---
 
 async def health_handler(reader, writer):
     try:
@@ -603,10 +603,10 @@ async def main():
         CallbackQueryHandler(button_handler),
     ])
 
-    await asyncio.start_server(
-        health_handler, '0.0.0.0', int(os.environ.get("PORT", 10000))
-    )
-    logger.info("Health check server started")
+    # HTTP-сервер заглушка для Render (чтобы не ругался на порт)
+    port = int(os.environ.get("PORT", 10000))
+    await asyncio.start_server(health_handler, '0.0.0.0', port)
+    logger.info(f"Health check server started on port {port}")
 
     async with app:
         await app.bot.delete_webhook(drop_pending_updates=True)
