@@ -1,3 +1,6 @@
 ccxt
 pandas
 python-telegram-bot[job-queue]
+aiogram
+ccxt
+python-dotenv
