@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta, time as dt_time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.request import HTTPXRequest # Добавлено для решения ошибки TimedOut
 
 # Настройка логов
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -65,6 +66,7 @@ class TradeJournal:
             df = pd.read_csv(self.filename)
             price_diff_pct = ((exit_p - entry) / entry) if side == 'LONG' else ((entry - exit_p) / entry)
             
+            # Расчет объема как в новой версии
             current_balance = get_current_balance()
             risk_amount = current_balance * CONFIG['risk_per_trade']
             position_size_usdt = risk_amount / CONFIG['stop_loss_pct']
@@ -134,11 +136,13 @@ class SignalBot:
         self.last_signal = {}
 
     async def scan(self, app_bot):
+        # Мониторинг активных сделок
         for trade in self.active_trades[:]:
             try:
                 ticker = await asyncio.to_thread(self.exchange.fetch_ticker, trade['symbol'])
                 curr_p = ticker['last']
                 
+                # Логика трейлинга и безубытка (оставляем новую)
                 side_mult = 1 if trade['side'] == 'LONG' else -1
                 profit_now = (curr_p - trade['entry']) / trade['entry'] * side_mult
 
@@ -162,6 +166,7 @@ class SignalBot:
                         new_sl = round(trade['lowest_price'] * (1 + self.cfg['trailing_distance']), 8)
                         if new_sl < trade['sl']: trade['sl'] = new_sl
 
+                # Проверка выхода
                 is_sl = (trade['side'] == 'LONG' and curr_p <= trade['sl']) or (trade['side'] == 'SHORT' and curr_p >= trade['sl'])
                 is_tp = (trade['side'] == 'LONG' and curr_p >= trade['tp']) or (trade['side'] == 'SHORT' and curr_p <= trade['tp'])
 
@@ -176,6 +181,7 @@ class SignalBot:
             except Exception as e:
                 logger.error(f"Trade error: {e}")
 
+        # Поиск новых сигналов
         for symbol in self.cfg['symbols']:
             if any(t['symbol'] == symbol for t in self.active_trades): continue
             try:
@@ -195,6 +201,7 @@ class SignalBot:
         sl = round(price * (1 - self.cfg['stop_loss_pct']) if side == 'LONG' else price * (1 + self.cfg['stop_loss_pct']), prec)
         tp = round(price * (1 + self.cfg['take_profit_pct']) if side == 'LONG' else price * (1 - self.cfg['take_profit_pct']), prec)
 
+        # Расчет объема (Position Sizing)
         current_balance = get_current_balance()
         risk_amount = current_balance * self.cfg['risk_per_trade']
         total_size = round(risk_amount / self.cfg['stop_loss_pct'], 2)
@@ -206,6 +213,7 @@ class SignalBot:
             'breakeven_hit': False, 'trailing_active': False
         })
 
+        # ИНТЕРФЕЙС ИЗ СТАРОГО БОТА
         msg = (
             f"💎 <b>НОВАЯ СДЕЛКА: {symbol}</b>\n"
             f"Тип: {side}\n"
@@ -219,38 +227,48 @@ class SignalBot:
         await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Закрыть вручную", callback_data=trade_id)]]))
 
-# --- КОМАНДЫ (ПОЛНЫЙ СПИСОК ИЗ ПЕРВОГО КОДА) ---
+# --- КОМАНДЫ ---
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = get_current_balance()
     active = len(bot_instance.active_trades) if bot_instance else 0
     await update.message.reply_html(f"✅ <b>Бот в сети!</b>\n💰 Баланс: {balance} USDT\n📊 Активных: {active}\n📋 Команды: /help")
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# НОВАЯ ПОЛНАЯ СТАТИСТИКА
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not os.path.exists('history.csv'): return await update.message.reply_text("📊 Нет данных.")
+    df = pd.read_csv('history.csv')
+    if df.empty: return await update.message.reply_text("История пуста.")
+
+    cur_bal = get_current_balance()
+    total_pnl = round(df['profit_usdt'].sum(), 2)
+    wins = len(df[df['profit_usdt'] > 0])
+    loss = len(df[df['profit_usdt'] <= 0])
+    wr = round((wins / len(df) * 100), 1)
+    avg_time = int(df['duration_min'].mean())
+    
+    # Расчет просадки
+    initial_bal = CONFIG['balance']
+    df['equity'] = initial_bal + df['profit_usdt'].cumsum()
+    peak = df['equity'].cummax()
+    drawdown = round(((df['equity'] - peak) / peak * 100).min(), 2)
+    
+    # Лучшая/худшая монета
+    coin_stats = df.groupby('symbol')['profit_usdt'].sum()
+    best_c, worst_c = coin_stats.idxmax(), coin_stats.idxmin()
+    best_p, worst_p = round(coin_stats.max(), 2), round(coin_stats.min(), 2)
+
     msg = (
-        "📖 <b>СПРАВОЧНИК КОМАНД:</b>\n\n"
-        "• /stats — Торговый отчет: PnL, WinRate, лучший актив.\n"
-        "• /history — Последние 10 сделок.\n"
-        "• /active — Открытые сделки с PnL.\n"
-        "• /set_sl [ПАРА] [ЦЕНА] — Изменить SL.\n"
-        "• /set_tp [ПАРА] [ЦЕНА] — Изменить TP.\n"
-        "• /start — Статус бота."
+        f"📊 <b>ПОЛНАЯ СТАТИСТИКА</b>\n━━━━━━━━━━━━\n"
+        f"💰 Баланс: <b>{cur_bal} USDT</b>\n"
+        f"📈 Общий PnL: <b>{total_pnl} USDT</b>\n"
+        f"🎯 Win Rate: <b>{wr}%</b> ({wins}W / {loss}L)\n"
+        f"⏱ Ср. время сделки: <b>{avg_time} мин.</b>\n"
+        f"📉 Макс. просадка: <b>{drawdown}%</b>\n"
+        f"🏆 Лучшая монета: <b>{best_c} ({best_p}$)</b>\n"
+        f"🆘 Худшая монета: <b>{worst_c} ({worst_p}$)</b>"
     )
     await update.message.reply_html(msg)
-
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not os.path.exists('history.csv') or pd.read_csv('history.csv').empty:
-        return await update.message.reply_text("📊 Нет данных для статистики.")
-    df = pd.read_csv('history.csv')
-    total_pnl = df['profit_usdt'].sum()
-    wins = len(df[df['profit_usdt'] > 0])
-    wr = (wins / len(df) * 100) if len(df) > 0 else 0
-    await update.message.reply_html(
-        f"📊 <b>СТАТИСТИКА:</b>\n━━━━━━━━━━━━\n"
-        f"💰 Общий PnL: <b>{round(total_pnl, 2)} USDT</b>\n"
-        f"🎯 Win Rate: <b>{round(wr, 1)}%</b>\n"
-        f"📈 Сделок: {len(df)}"
-    )
 
 async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not bot_instance or not bot_instance.active_trades:
@@ -275,19 +293,8 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"{icon} {r['date']} | {r['symbol']} | {r['profit_usdt']}$\n"
     await update.message.reply_html(msg)
 
-async def set_sl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2: return await update.message.reply_text("Формат: /set_sl BTC/USDT 64000")
-    symbol, price = context.args[0].upper(), float(context.args[1])
-    trade = next((t for t in bot_instance.active_trades if t['symbol'] == symbol), None)
-    if trade: trade['sl'] = price; await update.message.reply_text(f"✅ SL для {symbol} изменен на {price}")
-    else: await update.message.reply_text("❌ Позиция не найдена.")
-
-async def set_tp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2: return await update.message.reply_text("Формат: /set_tp BTC/USDT 70000")
-    symbol, price = context.args[0].upper(), float(context.args[1])
-    trade = next((t for t in bot_instance.active_trades if t['symbol'] == symbol), None)
-    if trade: trade['tp'] = price; await update.message.reply_text(f"✅ TP для {symbol} изменен на {price}")
-    else: await update.message.reply_text("❌ Позиция не найдена.")
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_html("📊 /stats, /active, /history, /start")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -299,39 +306,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_instance.active_trades.remove(trade)
         await query.edit_message_text(f"🔵 Закрыто вручную: {trade['symbol']}")
 
-async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
-    if not os.path.exists('history.csv'): return
-    df = pd.read_csv('history.csv')
-    today = datetime.now().strftime('%d.%m')
-    today_df = df[df['date'].str.startswith(today)]
-    if not today_df.empty:
-        pnl = today_df['profit_usdt'].sum()
-        await context.bot.send_message(chat_id=CONFIG['chat_id'], text=f"📋 <b>ИТОГ ДНЯ ({today}):</b>\nPnL: {round(pnl, 2)} USDT", parse_mode='HTML')
-
 async def health_handler(reader, writer):
     writer.write(b"HTTP/1.1 200 OK\r\n\r\nOK"); await writer.drain(); writer.close()
 
-# --- MAIN ---
 async def main():
     global bot_instance
     bot_instance = SignalBot(CONFIG)
-    app = Application.builder().token(CONFIG['telegram_token']).build()
+    
+    # Добавлены настройки таймаута для борьбы с TimedOut
+    request_config = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
+    app = Application.builder().token(CONFIG['telegram_token']).request(request_config).build()
     
     app.add_handlers([
-        CommandHandler("start", start_cmd),
+        CommandHandler("start", start_cmd), 
+        CommandHandler("active", active_cmd), 
+        CommandHandler("history", history_cmd), 
         CommandHandler("help", help_cmd),
-        CommandHandler("stats", stats_cmd),
-        CommandHandler("active", active_cmd),
-        CommandHandler("history", history_cmd),
-        CommandHandler("set_sl", set_sl_cmd),
-        CommandHandler("set_tp", set_tp_cmd),
+        CommandHandler("stats", stats_cmd), # Регистрация команды stats
         CallbackQueryHandler(button_handler)
     ])
     
-    app.job_queue.run_daily(send_daily_report, time=dt_time(hour=23, minute=50))
-    
     await asyncio.start_server(health_handler, '0.0.0.0', int(os.environ.get("PORT", 10000)))
-    
     async with app:
         await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
         while True:
