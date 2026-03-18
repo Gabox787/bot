@@ -12,7 +12,7 @@ from telegram.request import HTTPXRequest
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- CONFIG ---
+# --- CONFIG (ОБНОВЛЕННЫЕ ПАРАМЕТРЫ РИСКА) ---
 CONFIG = {
     'telegram_token': os.environ.get('TELEGRAM_TOKEN'),
     'chat_id': os.environ.get('CHAT_ID'),
@@ -33,10 +33,12 @@ CONFIG = {
     'balance': 1000,
     'leverage': 20,
     'risk_per_trade': 0.02,
-    'stop_loss_pct': 0.007,
-    'take_profit_pct': 0.03,
-    'breakeven_trigger': 0.0075,
-    'trailing_distance': 0.007,
+    # --- ИЗМЕНЕННЫЕ НАСТРОЙКИ ---
+    'stop_loss_pct': 0.015,       # Стоп 1.5% (был 0.7%)
+    'take_profit_pct': 0.045,      # Тейк 4.5% (был 3.0%)
+    'breakeven_trigger': 0.02,     # БУ при +2% (был 0.75%)
+    'trailing_distance': 0.01,     # Трейлинг 1% (был 0.7%)
+    # ----------------------------
     'commission_rate': 0.00055 * 2,
 }
 
@@ -249,37 +251,28 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_html(msg)
 
-# ОБНОВЛЕННАЯ КОМАНДА ACTIVE
 async def active_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not bot_instance or not bot_instance.active_trades:
         return await update.message.reply_text("📭 Нет активных сделок.")
-    
     msg = "<b>⏳ ТЕКУЩИЕ ПОЗИЦИИ:</b>\n━━━━━━━━━━━━━━━\n"
     total_current_pnl = 0
-    
     for t in bot_instance.active_trades:
         try:
             ticker = await asyncio.to_thread(bot_instance.exchange.fetch_ticker, t['symbol'])
             curr_p = ticker['last']
             side_mult = 1 if t['side'] == 'LONG' else -1
-            
-            # Расчет PnL и ROI
             roi_pct = round((curr_p - t['entry']) / t['entry'] * 100 * side_mult, 2)
             pnl_usdt = round(t['size_usdt'] * (roi_pct / 100), 2)
             total_current_pnl += pnl_usdt
-            
             side_icon = "🟢 LONG" if t['side'] == 'LONG' else "🔴 SHORT"
             pnl_icon = "📈" if pnl_usdt >= 0 else "📉"
-            
             msg += (
                 f"<b>{t['symbol']} | {side_icon}</b>\n"
                 f"📍 Вход: {t['entry']}\n"
                 f"🎯 TP: {t['tp']} | 🛑 SL: {t['sl']}\n"
                 f"{pnl_icon} PnL: <b>{pnl_usdt}$</b> | ROI: <b>{roi_pct}%</b>\n\n"
             )
-        except Exception as e:
-            logger.error(f"Error fetching active trade data for {t['symbol']}: {e}")
-
+        except Exception as e: logger.error(f"Active error: {e}")
     total_icon = "💰" if total_current_pnl >= 0 else "💸"
     msg += f"━━━━━━━━━━━━━━━\n{total_icon} <b>ОБЩИЙ PNL: {round(total_current_pnl, 2)}$</b>"
     await update.message.reply_html(msg)
@@ -305,13 +298,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = bot_instance.journal.log_trade(trade['symbol'], trade['side'], 'MANUAL EXIT 🔵', trade['entry'], ticker['last'], trade['start_time'])
         bot_instance.active_trades.remove(trade)
         if data:
-            msg = (
-                f"🔵 <b>ЗАКРЫТО ВРУЧНУЮ: {trade['symbol']}</b>\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"💰 PnL: <b>{data['profit_usdt']}$</b> ({data['profit_pct']}%)\n"
-                f"📍 Вход: {trade['entry']}\n"
-                f"🏁 Выход: {ticker['last']}"
-            )
+            msg = (f"🔵 <b>ЗАКРЫТО ВРУЧНУЮ: {trade['symbol']}</b>\n"
+                   f"━━━━━━━━━━━━━━━\n"
+                   f"💰 PnL: <b>{data['profit_usdt']}$</b> ({data['profit_pct']}%)\n"
+                   f"📍 Вход: {trade['entry']} | 🏁 Выход: {ticker['last']}")
             await query.edit_message_text(msg, parse_mode='HTML')
 
 async def health_handler(reader, writer):
