@@ -39,7 +39,7 @@ CONFIG = {
     'breakeven_trigger': 0.02,
     'trailing_distance': 0.01,
     'commission_rate': 0.00055 * 2,
-    'max_open_trades': 5,                          # [1] НОВОЕ: лимит позиций
+    'max_open_trades': 10,                          # [1] НОВОЕ: лимит позиций
 }
 
 
