@@ -45,10 +45,13 @@ bot_instance = None
 def get_current_balance():
     if not os.path.exists('history.csv'):
         return CONFIG['balance']
-    df = pd.read_csv('history.csv')
-    if df.empty:
+    try:
+        df = pd.read_csv('history.csv')
+        if df.empty:
+            return CONFIG['balance']
+        return round(CONFIG['balance'] + df['profit_usdt'].sum(), 2)
+    except:
         return CONFIG['balance']
-    return round(CONFIG['balance'] + df['profit_usdt'].sum(), 2)
 
 class TradeJournal:
     def __init__(self, filename='history.csv'):
@@ -192,7 +195,7 @@ class SignalBot:
     async def _open_trade(self, app_bot, symbol, side, price):
         prec = 8 if price < 0.01 else (4 if price < 1 else 2)
         sl = round(price * (1 - self.cfg['stop_loss_pct']) if side == 'LONG' else price * (1 + self.cfg['stop_loss_pct']), prec)
-        tp = round(price * (1 + self.cfg['take_profit_pct']) if side == 'LONG' else price * (1 + self.cfg['take_profit_pct']), prec)
+        tp = round(price * (1 + self.cfg['take_profit_pct']) if side == 'LONG' else price * (1 - self.cfg['take_profit_pct']), prec)
         current_balance = get_current_balance()
         risk_amount = current_balance * self.cfg['risk_per_trade']
         total_size = round(risk_amount / self.cfg['stop_loss_pct'], 2)
@@ -212,6 +215,8 @@ class SignalBot:
         )
         await app_bot.send_message(chat_id=self.cfg['chat_id'], text=msg, parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Закрыть вручную", callback_data=trade_id)]]))
+
+# --- КОМАНДЫ ---
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = get_current_balance()
@@ -301,7 +306,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(msg, parse_mode='HTML')
 
 async def health_handler(reader, writer):
-    writer.write(b"HTTP/1.1 200 OK\r\n\r\nOK"); await writer.drain(); writer.close()
+    writer.write(b"HTTP/1.1 200 OK\r\n\r\nOK")
+    await writer.drain()
+    writer.close()
 
 async def main():
     global bot_instance
@@ -313,12 +320,20 @@ async def main():
         CommandHandler("history", history_cmd), CommandHandler("help", help_cmd),
         CommandHandler("stats", stats_cmd), CallbackQueryHandler(button_handler)
     ])
-    await asyncio.start_server(health_handler, '0.0.0.0', int(os.environ.get("PORT", 10000)))
+    
+    port = int(os.environ.get("PORT", 10000))
+    await asyncio.start_server(health_handler, '0.0.0.0', port)
+    
     async with app:
-        await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
         while True:
             await bot_instance.scan(app.bot)
             await asyncio.sleep(30)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
