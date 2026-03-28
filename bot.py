@@ -31,7 +31,7 @@ CONFIG = {
     'macd_slow': 26,
     'macd_signal': 9,
     'vol_ma_period': 20,
-    'balance': 1000,
+    'balance': 2000,                                # ИЗМЕНЕНО: депозит 2000
     'leverage': 20,
     'risk_per_trade': 0.02,
     'stop_loss_pct': 0.015,
@@ -268,8 +268,10 @@ class SignalBot:
             price * (1 + self.cfg['take_profit_pct']) if side == 'LONG'
             else price * (1 - self.cfg['take_profit_pct']), prec
         )
-        current_balance = get_current_balance()
-        risk_amount = current_balance * self.cfg['risk_per_trade']
+        
+        # ИЗМЕНЕНО: всегда заходим на 1000 USDT (риск 2% от 1000 = 20$)
+        fixed_base = 1000
+        risk_amount = fixed_base * self.cfg['risk_per_trade']
         total_size = round(risk_amount / self.cfg['stop_loss_pct'], 2)
         trade_id = str(uuid.uuid4())                # [9] uuid вместо microsecond
 
