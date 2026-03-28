@@ -263,10 +263,8 @@ class SignalBot:
             else price * (1 - self.cfg['take_profit_pct']), prec
         )
         
-        # ИЗМЕНЕНО: вход всегда от базы 1000 USDT (риск 2% = 20$)
-        fixed_base = 1000
-        risk_amount = fixed_base * self.cfg['risk_per_trade']
-        total_size = round(risk_amount / self.cfg['stop_loss_pct'], 2)
+        # Теперь бот всегда берет 1000 USDT как объем позиции
+        total_size = 1000.0
         trade_id = str(uuid.uuid4())
 
         trade = {
