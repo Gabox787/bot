@@ -31,7 +31,7 @@ CONFIG = {
     'macd_slow': 26,
     'macd_signal': 9,
     'vol_ma_period': 20,
-    'balance': 2000,                                # ИЗМЕНЕНО: депозит 2000
+    'balance': 2000,
     'leverage': 20,
     'risk_per_trade': 0.02,
     'stop_loss_pct': 0.015,
@@ -263,7 +263,6 @@ class SignalBot:
             else price * (1 - self.cfg['take_profit_pct']), prec
         )
         
-        # Теперь бот всегда берет 1000 USDT как объем позиции
         total_size = 1000.0
         trade_id = str(uuid.uuid4())
 
@@ -445,20 +444,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def health_handler(reader, writer):
     try:
-        await asyncio.wait_for(reader.read(4096), timeout=5.0)
-    except asyncio.TimeoutError:
+        await asyncio.wait_for(reader.read(4096), timeout=2.0)
+    except Exception:
         pass
-    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
     await writer.drain()
     writer.close()
     await writer.wait_closed()
+
+
+async def scan_loop(signal_bot, app_bot, shutdown_event):
+    logger.info("Scan loop started.")
+    while not shutdown_event.is_set():
+        try:
+            await signal_bot.scan(app_bot)
+        except Exception as e:
+            logger.error(f"Scan loop error: {e}")
+        
+        # Спим короткими интервалами, чтобы быстрее реагировать на shutdown
+        for _ in range(30): 
+            if shutdown_event.is_set():
+                break
+            await asyncio.sleep(1)
+    logger.info("Scan loop stopped.")
 
 
 async def main():
     signal_bot = SignalBot(CONFIG)
     request_config = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
     app = Application.builder().token(CONFIG['telegram_token']).request(request_config).build()
-
     app.bot_data['signal_bot'] = signal_bot
 
     app.add_handlers([
@@ -471,40 +485,43 @@ async def main():
     ])
 
     port = int(os.environ.get("PORT", 10000))
-    await asyncio.start_server(health_handler, '0.0.0.0', port)
+    server = await asyncio.start_server(health_handler, '0.0.0.0', port)
     logger.info(f"Health check on port {port}")
 
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, shutdown_event.set)
-        except NotImplementedError:
-            pass
+    
+    # Обработка сигналов завершения
+    def stop():
+        shutdown_event.set()
+
+    if os.name != 'nt': # Для Linux (Render)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop)
 
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        logger.info("Bot started, scanning...")
-
-        try:
-            while not shutdown_event.is_set():
-                try:
-                    await signal_bot.scan(app.bot)
-                except Exception as e:
-                    logger.error(f"Scan loop error: {e}")
-                try:
-                    await asyncio.wait_for(shutdown_event.wait(), timeout=30)
-                except asyncio.TimeoutError:
-                    pass
-        finally:
-            logger.info("Shutting down...")
-            await app.updater.stop()
-            await app.stop()
-            await app.shutdown()
-            logger.info("Bot stopped.")
+        
+        # Запускаем цикл сканирования как фоновую задачу
+        scanner_task = asyncio.create_task(scan_loop(signal_bot, app.bot, shutdown_event))
+        
+        logger.info("Bot is running.")
+        await shutdown_event.wait()
+        
+        logger.info("Shutting down...")
+        scanner_task.cancel()
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        server.close()
+        await server.wait_closed()
+        logger.info("Bot stopped.")
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
